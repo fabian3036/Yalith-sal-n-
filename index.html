@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -123,6 +124,7 @@ function App(){
   },[appts,today]);
   const retouchBadge=retouchDue.length;
   const dismissRetouch=(client,date)=>{setAppts(p=>p.map(a=>(a.client===client&&a.date===date)?{...a,retouchDismissed:true}:a));};
+  const markNoAnswer=(client,date)=>{setAppts(p=>p.map(a=>(a.client===client&&a.date===date)?{...a,retouchNoAnswer:!a.retouchNoAnswer}:a));};
 
   const openNew=date=>{setForm({client:"",phone:"",service:SERVICES[0],date:date||selDate,time:"10:00",notes:"",price:""});setModal("new");};
   const saveNew=()=>{if(!form.client.trim())return;setAppts(p=>[...p,{...form,id:uid(),status:"confirmada",retouchDismissed:false}]);setModal(null);};
@@ -202,15 +204,22 @@ function App(){
         {retouchDue.length===0&&(<div style={{textAlign:"center",padding:"40px 0"}}><div style={{fontSize:40,marginBottom:12}}>✅</div><div style={{color:C.muted,fontSize:14}}>Nadie pendiente de retoque por ahora</div></div>)}
         {retouchDue.map(a=>{
           const diff=daysBetween(a.date,today);
-          return(<div key={a.client+a.date} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:16,marginBottom:12}}>
+          return(<div key={a.client+a.date} style={{background:C.card,border:`1px solid ${a.retouchNoAnswer?C.danger:C.border}`,borderRadius:12,padding:16,marginBottom:12}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
-              <div><div style={{fontSize:16,marginBottom:3}}>{a.client}</div><div style={{fontSize:12,color:C.muted}}>{a.service}</div></div>
+              <div>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}>
+                  <div style={{fontSize:16}}>{a.client}</div>
+                  {a.retouchNoAnswer&&<span style={{fontSize:10,color:C.danger,border:`1px solid ${C.danger}`,borderRadius:20,padding:"2px 8px"}}>No contesta</span>}
+                </div>
+                <div style={{fontSize:12,color:C.muted}}>{a.service}</div>
+              </div>
               <div style={{textAlign:"right"}}><div style={{fontSize:13,color:C.danger}}>hace {diff} días</div><div style={{fontSize:11,color:C.muted,marginTop:2}}>último: {fmt(a.date)}</div></div>
             </div>
             <div style={{display:"flex",gap:8}}>
               {a.phone?(<a href={buildRetouchWAMsg(a)} target="_blank" rel="noreferrer" style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:8,background:"rgba(37,211,102,0.15)",border:"1px solid #25D366",color:"#25D366",borderRadius:10,padding:"11px 0",fontSize:13,textDecoration:"none"}}>📲 Recordar</a>):(<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:C.muted,fontSize:12}}>sin teléfono</div>)}
               <button onClick={()=>dismissRetouch(a.client,a.date)} className="tap" style={{flex:1,background:"none",border:`1px solid ${C.border}`,color:C.muted,borderRadius:10,padding:"11px 0",fontSize:13,cursor:"pointer"}}>Ya agendó</button>
             </div>
+            <button onClick={()=>markNoAnswer(a.client,a.date)} className="tap" style={{width:"100%",marginTop:8,background:a.retouchNoAnswer?"rgba(201,110,110,0.15)":"none",border:`1px solid ${C.danger}`,color:C.danger,borderRadius:10,padding:"11px 0",fontSize:13,cursor:"pointer"}}>{a.retouchNoAnswer?"✕ Quitar 'No contesta'":"No contesta"}</button>
           </div>);
         })}
       </div>)}
