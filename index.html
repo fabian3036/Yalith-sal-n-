@@ -11,8 +11,6 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
     body { background:#0d0d0d; font-family:'Georgia',serif; overscroll-behavior:none; }
@@ -28,24 +26,17 @@
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useMemo, useEffect, useRef } = React;
-
-// ---- Firebase ----
-const firebaseConfig = {
-  apiKey: "AIzaSyB0QNLpDUQkvCrlZDOJXLHhhE4hDRtSjKs",
-  authDomain: "yalith-salon.firebaseapp.com",
-  projectId: "yalith-salon",
-  storageBucket: "yalith-salon.firebasestorage.app",
-  messagingSenderId: "606996435992",
-  appId: "1:606996435992:web:14a04a56fbbabbe6289f6d"
-};
-firebase.initializeApp(firebaseConfig);
-const db = firebase.firestore();
-const AGENDA_DOC = db.collection("yalith").doc("agenda");
-
-const SERVICES = ["Extensiones clásicas","Extensiones volumen","Extensiones mega volumen","Retoque clásico","Retoque volumen","Lifting de pestañas","Diseño de cejas"];
-// Servicios que generan recordatorio de retoque a 15 días
-const RETOUCH_SERVICES = ["Extensiones clásicas","Extensiones volumen","Extensiones mega volumen"];
+const { useState, useMemo, useEffect } = React;
+const PROMOS = [
+  {name:"Mirada Completa (pestañas + cejas)", price:599},
+  {name:"4x1 Cejas y Pestañas", price:550},
+  {name:"Laminado de Cejas Gratis (con extensiones)", price:399},
+  {name:"Retoque de pestañas", price:null}
+];
+const SERVICES = PROMOS.map(p=>p.name);
+const priceForService = name=>{const p=PROMOS.find(x=>x.name===name);return (p&&p.price!=null)?String(p.price):"";};
+// Todas las promociones (incluido el retoque) generan recordatorio de retoque a 15 días
+const RETOUCH_SERVICES = PROMOS.map(p=>p.name);
 const RETOUCH_DAYS = 15;
 const C = {bg:"#0d0d0d",card:"#161616",accent:"#c9a96e",accentFade:"rgba(201,169,110,0.12)",text:"#f0ece4",muted:"#7a7269",border:"rgba(201,169,110,0.18)",danger:"#c96e6e",success:"#6ec98a"};
 const pad=n=>String(n).padStart(2,"0");
@@ -96,42 +87,8 @@ function App(){
   const[searchQ,setSearchQ]=useState("");
   const[now,setNow]=useState(new Date());
   const[form,setForm]=useState({client:"",phone:"",service:SERVICES[0],date:todayStr(),time:"10:00",notes:"",price:""});
-  const skipNextSync=useRef(true);
-  const gotRemoteOnce=useRef(false);
   useEffect(()=>{const t=setInterval(()=>setNow(new Date()),60000);return()=>clearInterval(t);},[]);
-  // ---- Sincronización en tiempo real con Firestore ----
-  useEffect(()=>{
-    const unsub=AGENDA_DOC.onSnapshot(snap=>{
-      if(snap.exists){
-        const data=snap.data();
-        if(Array.isArray(data.appts)){
-          skipNextSync.current=true;
-          setAppts(data.appts);
-        }
-      }else if(!gotRemoteOnce.current){
-        // No existe el documento aún en la nube: lo creamos con los datos locales actuales
-        AGENDA_DOC.set({appts}).catch(()=>{});
-      }
-      gotRemoteOnce.current=true;
-    },err=>{
-      console.error("Error de sincronización:",err);
-      setSavedMsg("⚠ sin conexión");
-    });
-    return()=>unsub();
-  },[]);
-  useEffect(()=>{
-    const ok=saveAppts(appts);
-    if(skipNextSync.current){
-      skipNextSync.current=false;
-      setSavedMsg(ok?"✓ guardado":"⚠ error");
-    }else{
-      AGENDA_DOC.set({appts})
-        .then(()=>setSavedMsg("☁ sincronizado"))
-        .catch(()=>setSavedMsg("⚠ sin conexión"));
-    }
-    const t=setTimeout(()=>setSavedMsg(""),2500);
-    return()=>clearTimeout(t);
-  },[appts]);
+  useEffect(()=>{const ok=saveAppts(appts);setSavedMsg(ok?"✓ guardado":"⚠ error");const t=setTimeout(()=>setSavedMsg(""),2500);return()=>clearTimeout(t);},[appts]);
   const week=useMemo(()=>weekDates(weekBase),[weekBase]);
   const moneyWeek=useMemo(()=>weekDates(moneyWeekBase),[moneyWeekBase]);
   const byDate=useMemo(()=>{const m={};appts.forEach(a=>{if(!m[a.date])m[a.date]=[];m[a.date].push(a);});Object.keys(m).forEach(k=>m[k].sort((a,b)=>a.time.localeCompare(b.time)));return m;},[appts]);
@@ -174,7 +131,7 @@ function App(){
   const retouchBadge=retouchDue.length;
   const dismissRetouch=(client,date)=>{setAppts(p=>p.map(a=>(a.client===client&&a.date===date)?{...a,retouchDismissed:true}:a));};
 
-  const openNew=date=>{setForm({client:"",phone:"",service:SERVICES[0],date:date||selDate,time:"10:00",notes:"",price:""});setModal("new");};
+  const openNew=date=>{setForm({client:"",phone:"",service:SERVICES[0],date:date||selDate,time:"10:00",notes:"",price:priceForService(SERVICES[0])});setModal("new");};
   const saveNew=()=>{if(!form.client.trim())return;setAppts(p=>[...p,{...form,id:uid(),status:"confirmada",retouchDismissed:false}]);setModal(null);};
   const openEdit=a=>{setForm({client:a.client,phone:a.phone,service:a.service,date:a.date,time:a.time,notes:a.notes,price:a.price||""});setActiveA(a);setModal("edit");};
   const saveEdit=()=>{setAppts(p=>p.map(a=>a.id===activeA.id?{...a,...form}:a));setModal(null);};
@@ -190,7 +147,7 @@ function App(){
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",paddingBottom:14}}>
             <div><div style={{fontSize:10,letterSpacing:4,color:C.accent,textTransform:"uppercase",marginBottom:4}}>Agenda</div><div style={{fontSize:26,fontWeight:400,letterSpacing:1}}>Yalith Salón</div></div>
             <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6}}>
-              {savedMsg&&<div style={{fontSize:10,color:savedMsg.startsWith("⚠")?C.danger:C.success}}>{savedMsg}</div>}
+              {savedMsg&&<div style={{fontSize:10,color:savedMsg.startsWith("✓")?C.success:C.danger}}>{savedMsg}</div>}
               <button onClick={()=>openNew()} style={S.btn} className="tap">+ Nueva cita</button>
             </div>
           </div>
@@ -269,7 +226,7 @@ function App(){
       {view==="history"&&(<div style={{padding:"16px"}}><input value={searchQ} onChange={e=>setSearchQ(e.target.value)} placeholder="Buscar clienta por nombre o teléfono…" style={{...S.input,background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"13px 14px",marginBottom:16}}/>{!searchQ.trim()&&(<div><div style={{fontSize:10,letterSpacing:3,color:C.muted,textTransform:"uppercase",marginBottom:12}}>Todas las clientas</div>{Object.entries(appts.reduce((acc,a)=>{if(!acc[a.client])acc[a.client]={client:a.client,phone:a.phone,appts:[]};acc[a.client].appts.push(a);return acc;},{})).map(([name,data])=>(<div key={name} onClick={()=>setSearchQ(name)} className="tap" style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"12px 14px",marginBottom:8,cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontSize:15}}>{data.client}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>{data.phone}</div></div><div style={{fontSize:12,color:C.muted}}>{data.appts.length} cita{data.appts.length!==1?"s":""}</div></div>))}</div>)}{searchQ.trim()&&clientHistory.length===0&&<div style={{color:C.muted,fontSize:14,textAlign:"center",padding:"40px 0"}}>No se encontró ninguna clienta</div>}{clientHistory.map(c=>(<div key={c.client} style={{marginBottom:24}}><div style={{fontSize:16,marginBottom:4}}>{c.client}</div><div style={{fontSize:12,color:C.muted,marginBottom:12}}>{c.phone} · {c.appts.length} cita{c.appts.length!==1?"s":""}</div>{c.appts.map(a=><ApptCard key={a.id} a={a} onClick={()=>{setActiveA(a);setModal("detail");}} compact/>)}</div>))}</div>)}
       {modal&&(<div onClick={()=>setModal(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",zIndex:200,display:"flex",alignItems:"flex-end"}}><div onClick={e=>e.stopPropagation()} style={{background:C.card,borderRadius:"20px 20px 0 0",padding:"24px 20px 40px",width:"100%",maxWidth:480,margin:"0 auto",borderTop:`1px solid ${C.border}`,maxHeight:"88vh",overflowY:"auto"}}>
         {modal==="detail"&&activeA&&(<><ModalHeader title="Detalle de cita" onClose={()=>setModal(null)}/><div style={{marginBottom:10}}><Label>Clienta</Label><Val>{activeA.client}</Val></div><div style={{marginBottom:10}}><Label>Teléfono</Label><Val>{activeA.phone||"—"}</Val></div><div style={{marginBottom:10}}><Label>Servicio</Label><Val>{activeA.service}</Val></div><div style={{display:"flex",gap:16,marginBottom:10}}><div><Label>Fecha</Label><Val>{fmt(activeA.date)}</Val></div><div><Label>Hora</Label><Val>{activeA.time}</Val></div></div>{activeA.price&&<div style={{marginBottom:10}}><Label>Precio</Label><Val>{money(activeA.price)}</Val></div>}{activeA.notes&&<div style={{marginBottom:10}}><Label>Notas</Label><Val>{activeA.notes}</Val></div>}<div style={{marginBottom:20}}><Label>Estado</Label><span style={{display:"inline-block",padding:"3px 12px",borderRadius:20,fontSize:12,background:activeA.status==="confirmada"?"rgba(110,201,138,0.15)":"rgba(201,110,110,0.15)",color:activeA.status==="confirmada"?C.success:C.danger}}>{activeA.status}</span></div><div style={{display:"flex",gap:10,marginBottom:10}}><button onClick={()=>openEdit(activeA)} className="tap" style={{...S.btn,flex:1,justifyContent:"center"}}>Editar / Mover</button>{activeA.status==="confirmada"?<button onClick={()=>cancelAppt(activeA.id)} className="tap" style={{...S.btn,flex:1,justifyContent:"center",background:"rgba(201,110,110,0.15)",borderColor:C.danger,color:C.danger}}>Cancelar</button>:<button onClick={()=>restore(activeA.id)} className="tap" style={{...S.btn,flex:1,justifyContent:"center"}}>Restaurar</button>}</div>{activeA.phone&&activeA.status==="confirmada"&&(<a href={buildWAMsg(activeA)} target="_blank" rel="noreferrer" style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,background:"rgba(37,211,102,0.12)",border:"1px solid #25D366",color:"#25D366",borderRadius:10,padding:"12px 0",fontSize:14,textDecoration:"none",width:"100%",boxSizing:"border-box"}}>📲 Enviar recordatorio por WhatsApp</a>)}</>)}
-        {(modal==="new"||modal==="edit")&&(<><ModalHeader title={modal==="new"?"Nueva cita":"Editar cita"} onClose={()=>setModal(null)}/><Field label="Nombre de clienta"><input style={S.input} value={form.client} onChange={e=>setF("client",e.target.value)} placeholder="Ej. Sofía Ramírez"/></Field><Field label="Teléfono (opcional)"><input style={S.input} value={form.phone} onChange={e=>setF("phone",e.target.value)} placeholder="9981234567" inputMode="numeric"/></Field><Field label="Servicio"><select style={S.input} value={form.service} onChange={e=>setF("service",e.target.value)}>{SERVICES.map(s=><option key={s}>{s}</option>)}</select></Field><div style={{display:"flex",gap:12}}><Field label="Fecha" style={{flex:1}}><input style={S.input} type="date" value={form.date} onChange={e=>setF("date",e.target.value)}/></Field><Field label="Hora" style={{flex:1}}><input style={S.input} type="time" value={form.time} onChange={e=>setF("time",e.target.value)}/></Field></div><Field label="Precio (opcional)"><input style={S.input} value={form.price} onChange={e=>setF("price",e.target.value.replace(/[^0-9.]/g,""))} placeholder="Ej. 850" inputMode="decimal"/></Field><Field label="Notas (opcional)"><textarea style={{...S.input,height:70,resize:"none"}} value={form.notes} onChange={e=>setF("notes",e.target.value)} placeholder="Alergias, preferencias…"/></Field><button onClick={modal==="new"?saveNew:saveEdit} className="tap" style={{...S.btn,width:"100%",justifyContent:"center",padding:"14px",fontSize:15,marginTop:4}}>{modal==="new"?"Guardar cita":"Actualizar cita"}</button></>)}
+        {(modal==="new"||modal==="edit")&&(<><ModalHeader title={modal==="new"?"Nueva cita":"Editar cita"} onClose={()=>setModal(null)}/><Field label="Nombre de clienta"><input style={S.input} value={form.client} onChange={e=>setF("client",e.target.value)} placeholder="Ej. Sofía Ramírez"/></Field><Field label="Teléfono (opcional)"><input style={S.input} value={form.phone} onChange={e=>setF("phone",e.target.value)} placeholder="9981234567" inputMode="numeric"/></Field><Field label="Servicio"><select style={S.input} value={form.service} onChange={e=>setForm(f=>({...f,service:e.target.value,price:priceForService(e.target.value)}))}>{SERVICES.map(s=><option key={s}>{s}</option>)}</select></Field><div style={{display:"flex",gap:12}}><Field label="Fecha" style={{flex:1}}><input style={S.input} type="date" value={form.date} onChange={e=>setF("date",e.target.value)}/></Field><Field label="Hora" style={{flex:1}}><input style={S.input} type="time" value={form.time} onChange={e=>setF("time",e.target.value)}/></Field></div><Field label="Precio (opcional)"><input style={S.input} value={form.price} onChange={e=>setF("price",e.target.value.replace(/[^0-9.]/g,""))} placeholder="Ej. 850" inputMode="decimal"/></Field><Field label="Notas (opcional)"><textarea style={{...S.input,height:70,resize:"none"}} value={form.notes} onChange={e=>setF("notes",e.target.value)} placeholder="Alergias, preferencias…"/></Field><button onClick={modal==="new"?saveNew:saveEdit} className="tap" style={{...S.btn,width:"100%",justifyContent:"center",padding:"14px",fontSize:15,marginTop:4}}>{modal==="new"?"Guardar cita":"Actualizar cita"}</button></>)}
       </div></div>)}
     </div>
   );
