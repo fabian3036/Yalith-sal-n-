@@ -11,6 +11,8 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
     body { background:#0d0d0d; font-family:'Georgia',serif; overscroll-behavior:none; }
@@ -27,6 +29,20 @@
 <div id="root"></div>
 <script type="text/babel">
 const { useState, useMemo, useEffect } = React;
+
+// ---- Conexión a Firebase (yalith-salon) ----
+const firebaseConfig = {
+  apiKey: "AIzaSyB0QNLpDUQkvCrlZDOJXLHhhE4hDRtSjKs",
+  authDomain: "yalith-salon.firebaseapp.com",
+  projectId: "yalith-salon",
+  storageBucket: "yalith-salon.firebasestorage.app",
+  messagingSenderId: "606996435992",
+  appId: "1:606996435992:web:14a04a56fbbabbe6289f6d"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+const agendaDocRef = db.collection("yalith").doc("agenda");
+
 const PROMOS = [
   {name:"Mirada Completa (pestañas + cejas)", price:599},
   {name:"4x1 Cejas y Pestañas", price:550},
@@ -69,6 +85,7 @@ const loadAppts=()=>{
   return DEMO;
 };
 const saveAppts=appts=>{try{localStorage.setItem(STORAGE_KEY,JSON.stringify(appts));return true;}catch{return false;}};
+const pushToFirestore=async next=>{try{await agendaDocRef.set({appts:next},{merge:true});}catch(e){console.error("firestore write error",e);}};
 const S={btn:{display:"inline-flex",alignItems:"center",gap:6,background:C.accentFade,border:`1px solid ${C.accent}`,color:C.accent,borderRadius:10,padding:"10px 16px",fontSize:13,cursor:"pointer",letterSpacing:0.5},navBtn:{background:"none",border:`1px solid ${C.border}`,color:C.muted,width:38,height:38,borderRadius:8,cursor:"pointer",fontSize:22,display:"flex",alignItems:"center",justifyContent:"center"},input:{width:"100%",background:"#0d0d0d",border:`1px solid rgba(201,169,110,0.25)`,borderRadius:8,padding:"12px",color:C.text,fontSize:15,outline:"none"}};
 function Label({children}){return <div style={{fontSize:10,letterSpacing:2,color:C.muted,textTransform:"uppercase",marginBottom:5}}>{children}</div>;}
 function Val({children}){return <div style={{fontSize:15,color:C.text}}>{children}</div>;}
@@ -77,6 +94,24 @@ function ModalHeader({title,onClose}){return(<div style={{display:"flex",justify
 function ApptCard({a,onClick,compact}){const rs=getReminderStatus(a);const showWA=!compact&&a.phone&&(rs==="ahora"||rs==="pronto");return(<div onClick={onClick} className="tap" style={{background:C.card,border:`1px solid ${C.border}`,borderLeft:`3px solid ${a.status==="cancelada"?C.danger:C.accent}`,borderRadius:10,padding:compact?"10px 12px":"14px 16px",marginBottom:10,cursor:"pointer",opacity:a.status==="cancelada"?0.5:1}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}><div><div style={{fontSize:compact?14:16,color:C.text,marginBottom:3}}>{a.client}</div><div style={{fontSize:12,color:C.muted}}>{a.service}</div></div><div style={{textAlign:"right"}}>{a.price&&<div style={{fontSize:12,color:C.success,marginBottom:2}}>{money(a.price)}</div>}<div style={{fontSize:15,color:C.accent,fontWeight:600}}>{a.time}</div>{compact&&<div style={{fontSize:11,color:C.muted,marginTop:2}}>{fmt(a.date)}</div>}{showWA&&<div style={{fontSize:10,color:"#25D366",marginTop:4}}>📲 listo</div>}</div></div></div>);}
 function App(){
   const[appts,setAppts]=useState(loadAppts);
+  const[cloudStatus,setCloudStatus]=useState("conectando");
+  useEffect(()=>{
+    const unsub=agendaDocRef.onSnapshot(snap=>{
+      if(snap.exists){
+        const data=snap.data();
+        if(Array.isArray(data.appts)){
+          const clean=data.appts.map(a=>({...a,price:a.price??"",retouchDismissed:a.retouchDismissed||false}));
+          setAppts(clean);
+          saveAppts(clean);
+        }
+      }else{
+        // primer uso: sube lo que haya en caché local como base
+        pushToFirestore(loadAppts());
+      }
+      setCloudStatus("conectado");
+    },err=>{console.error(err);setCloudStatus("sin conexión (usando datos locales)");});
+    return ()=>unsub();
+  },[]);
   const[savedMsg,setSavedMsg]=useState("");
   const[view,setView]=useState("week");
   const[selDate,setSelDate]=useState(todayStr());
@@ -129,14 +164,14 @@ function App(){
     }).sort((a,b)=>daysBetween(b.date,today)-daysBetween(a.date,today));
   },[appts,today]);
   const retouchBadge=retouchDue.length;
-  const dismissRetouch=(client,date)=>{setAppts(p=>p.map(a=>(a.client===client&&a.date===date)?{...a,retouchDismissed:true}:a));};
+  const dismissRetouch=(client,date)=>{const next=appts.map(a=>(a.client===client&&a.date===date)?{...a,retouchDismissed:true}:a);setAppts(next);pushToFirestore(next);};
 
   const openNew=date=>{setForm({client:"",phone:"",service:SERVICES[0],date:date||selDate,time:"10:00",notes:"",price:priceForService(SERVICES[0])});setModal("new");};
-  const saveNew=()=>{if(!form.client.trim())return;setAppts(p=>[...p,{...form,id:uid(),status:"confirmada",retouchDismissed:false}]);setModal(null);};
+  const saveNew=()=>{if(!form.client.trim())return;const next=[...appts,{...form,id:uid(),status:"confirmada",retouchDismissed:false}];setAppts(next);pushToFirestore(next);setModal(null);};
   const openEdit=a=>{setForm({client:a.client,phone:a.phone,service:a.service,date:a.date,time:a.time,notes:a.notes,price:a.price||""});setActiveA(a);setModal("edit");};
-  const saveEdit=()=>{setAppts(p=>p.map(a=>a.id===activeA.id?{...a,...form}:a));setModal(null);};
-  const cancelAppt=id=>{setAppts(p=>p.map(a=>a.id===id?{...a,status:"cancelada"}:a));setModal(null);};
-  const restore=id=>{setAppts(p=>p.map(a=>a.id===id?{...a,status:"confirmada"}:a));setModal(null);};
+  const saveEdit=()=>{const next=appts.map(a=>a.id===activeA.id?{...a,...form}:a);setAppts(next);pushToFirestore(next);setModal(null);};
+  const cancelAppt=id=>{const next=appts.map(a=>a.id===id?{...a,status:"cancelada"}:a);setAppts(next);pushToFirestore(next);setModal(null);};
+  const restore=id=>{const next=appts.map(a=>a.id===id?{...a,status:"confirmada"}:a);setAppts(next);pushToFirestore(next);setModal(null);};
   const shiftDay=delta=>{const d=new Date(selDate+"T00:00:00");d.setDate(d.getDate()+delta);setSelDate(`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`);};
   const shiftWeek=delta=>{const d=new Date(weekBase+"T00:00:00");d.setDate(d.getDate()+delta*7);setWeekBase(`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`);};
   const setF=(k,v)=>setForm(f=>({...f,[k]:v}));
@@ -148,6 +183,7 @@ function App(){
             <div><div style={{fontSize:10,letterSpacing:4,color:C.accent,textTransform:"uppercase",marginBottom:4}}>Agenda</div><div style={{fontSize:26,fontWeight:400,letterSpacing:1}}>Yalith Salón</div></div>
             <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6}}>
               {savedMsg&&<div style={{fontSize:10,color:savedMsg.startsWith("✓")?C.success:C.danger}}>{savedMsg}</div>}
+              <div style={{fontSize:9,color:cloudStatus==="conectado"?C.success:C.muted}}>{cloudStatus==="conectado"?"☁️ sincronizado":cloudStatus}</div>
               <button onClick={()=>openNew()} style={S.btn} className="tap">+ Nueva cita</button>
             </div>
           </div>
