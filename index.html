@@ -71,6 +71,7 @@ const getReminderStatus=a=>{if(a.status==="cancelada")return null;const mins=min
 const cleanPhone=phone=>{const digits=phone.replace(/\D/g,"");if(digits.startsWith("52")&&digits.length>=12)return digits;return "52"+digits.replace(/^0+/,"");};
 const buildWAMsg=a=>{const msg=`¡Hola ${a.client}! 👋\n\nTe recordamos que tienes tu cita en *Yalith Salón* hoy a las *${a.time}* para *${a.service}*.\n\nTe esperamos 💛\n\n_Por favor confirma tu asistencia respondiendo este mensaje._`;return `https://wa.me/${cleanPhone(a.phone)}?text=${encodeURIComponent(msg)}`;};
 const buildRetouchWAMsg=a=>{const msg=`¡Hola ${a.client}! 👋\n\nYa han pasado *${RETOUCH_DAYS} días* desde tu último servicio de *${a.service}* en *Yalith Salón*.\n\n¡Es momento de tu retoque! ¿Te gustaría agendar? 💛`;return `https://wa.me/${cleanPhone(a.phone)}?text=${encodeURIComponent(msg)}`;};
+const buildReactivationWAMsg=a=>{const msg=`¡Hola ${a.client}! 👋\n\nTe extrañamos en *Yalith Salón* 💛 Ya ha pasado un tiempo desde tu última visita. ¿Te gustaría agendar tu próxima cita?`;return `https://wa.me/${cleanPhone(a.phone)}?text=${encodeURIComponent(msg)}`;};
 const money=n=>`$${(n||0).toLocaleString("es-MX",{minimumFractionDigits:0,maximumFractionDigits:0})}`;
 const STORAGE_KEY="yalith_agenda_v3";
 const OLD_STORAGE_KEY="yalith_agenda_v2";
@@ -187,6 +188,42 @@ function App(){
   const retouchBadge=retouchDue.length;
   const dismissRetouch=(client,date)=>{const next=appts.map(a=>(a.client===client&&a.date===date)?{...a,retouchDismissed:true}:a);setAppts(next);pushToFirestore(next);};
 
+  // ---- Consejos automáticos ----
+  const insights=useMemo(()=>{
+    const confirmed=appts.filter(a=>a.status==="confirmada");
+    // Clientas inactivas: 30+ días desde su última visita y sin cita futura agendada
+    const lastByClient={};
+    confirmed.forEach(a=>{if(!lastByClient[a.client]||a.date>lastByClient[a.client].date)lastByClient[a.client]=a;});
+    const hasFuture=client=>confirmed.some(a=>a.client===client&&a.date>today);
+    const inactive=Object.values(lastByClient).filter(a=>daysBetween(a.date,today)>=30&&!hasFuture(a.client)).sort((a,b)=>daysBetween(b.date,today)-daysBetween(a.date,today));
+    // Comparación de ingresos: semana actual vs semana pasada
+    const thisWeekDates=weekDates(today);
+    const lastWeekDates=weekDates(addDays(today,-7));
+    const sumWeek=dates=>confirmed.filter(a=>dates.includes(a.date)).reduce((s,a)=>s+(parseFloat(a.price)||0),0);
+    const thisWeekTotal=sumWeek(thisWeekDates);
+    const lastWeekTotal=sumWeek(lastWeekDates);
+    const weekChangePct=lastWeekTotal>0?Math.round(((thisWeekTotal-lastWeekTotal)/lastWeekTotal)*100):null;
+    // Clientas que cancelan seguido (sus últimas 2 citas, ambas canceladas)
+    const byClientAll={};
+    appts.forEach(a=>{if(!byClientAll[a.client])byClientAll[a.client]=[];byClientAll[a.client].push(a);});
+    const repeatedCancellers=Object.entries(byClientAll).filter(([,list])=>{
+      const sorted=[...list].sort((a,b)=>b.date.localeCompare(a.date));
+      return sorted.length>=2&&sorted[0].status==="cancelada"&&sorted[1].status==="cancelada";
+    }).map(([name])=>name);
+    // Servicio más vendido del mes actual
+    const monthAppts=confirmed.filter(a=>a.date.slice(0,7)===today.slice(0,7));
+    const serviceCounts={};
+    monthAppts.forEach(a=>{serviceCounts[a.service]=(serviceCounts[a.service]||0)+1;});
+    const topService=Object.entries(serviceCounts).sort((a,b)=>b[1]-a[1])[0]||null;
+    // Día de la semana con más ingresos (histórico)
+    const dayTotals=Array(7).fill(0);
+    confirmed.forEach(a=>{const idx=(new Date(a.date+"T00:00:00").getDay()+6)%7;dayTotals[idx]+=(parseFloat(a.price)||0);});
+    let bestDayIdx=0;dayTotals.forEach((v,i)=>{if(v>dayTotals[bestDayIdx])bestDayIdx=i;});
+    const hasDayData=dayTotals.some(v=>v>0);
+    return {inactive,thisWeekTotal,lastWeekTotal,weekChangePct,repeatedCancellers,topService,dayTotals,bestDayIdx,hasDayData};
+  },[appts,today]);
+  const insightsCount=insights.inactive.length+insights.repeatedCancellers.length;
+
   const openNew=date=>{setForm({client:"",phone:"",service:SERVICES[0],date:date||selDate,time:"10:00",notes:"",price:priceForService(SERVICES[0]),deposit:"",isNew:true});setModal("new");};
   const saveNew=()=>{if(!form.client.trim())return;const next=[...appts,{...form,id:uid(),status:"confirmada",retouchDismissed:false}];setAppts(next);pushToFirestore(next);setModal(null);};
   const openEdit=a=>{setForm({client:a.client,phone:a.phone,service:a.service,date:a.date,time:a.time,notes:a.notes,price:a.price||"",deposit:a.deposit||"",isNew:a.isNew||false});setActiveA(a);setModal("edit");};
@@ -209,11 +246,12 @@ function App(){
             </div>
           </div>
           <div style={{display:"flex",overflowX:"auto"}}>
-            {[["week","Semana"],["day","Día"],["money","💰"],["clients","Clientas"],["history","Historial"],["retouch","🔁"],["reminders","📲"]].map(([v,l])=>(
+            {[["week","Semana"],["day","Día"],["money","💰"],["clients","Clientas"],["history","Historial"],["retouch","🔁"],["advice","💡"],["reminders","📲"]].map(([v,l])=>(
               <button key={v} onClick={()=>setView(v)} style={{flex:"1 0 auto",minWidth:46,padding:"10px 0",background:"none",border:"none",cursor:"pointer",color:view===v?C.accent:C.muted,borderBottom:view===v?`2px solid ${C.accent}`:"2px solid transparent",fontSize:13,position:"relative"}}>
                 {l}
                 {v==="reminders"&&badge>0&&<span style={{position:"absolute",top:6,right:"14%",background:C.danger,color:"#fff",fontSize:9,borderRadius:10,padding:"1px 5px"}}>{badge}</span>}
                 {v==="retouch"&&retouchBadge>0&&<span style={{position:"absolute",top:6,right:"14%",background:C.danger,color:"#fff",fontSize:9,borderRadius:10,padding:"1px 5px"}}>{retouchBadge}</span>}
+                {v==="advice"&&insightsCount>0&&<span style={{position:"absolute",top:6,right:"14%",background:C.danger,color:"#fff",fontSize:9,borderRadius:10,padding:"1px 5px"}}>{insightsCount}</span>}
               </button>
             ))}
           </div>
@@ -277,6 +315,51 @@ function App(){
             </div>
           </div>);
         })}
+      </div>)}
+
+      {view==="advice"&&(<div style={{padding:"16px"}}>
+        <div style={{fontSize:10,letterSpacing:3,color:C.muted,textTransform:"uppercase",marginBottom:6}}>Consejos automáticos</div>
+        <div style={{fontSize:13,color:C.muted,marginBottom:20}}>Basado en tus datos guardados</div>
+
+        <div style={{background:C.card,border:`1px solid ${C.accent}`,borderRadius:14,padding:"18px",marginBottom:16}}>
+          <Label>Ingresos: esta semana vs la pasada</Label>
+          <div style={{display:"flex",alignItems:"baseline",gap:10,marginTop:6}}>
+            <div style={{fontSize:26,color:C.accent,fontWeight:600}}>{money(insights.thisWeekTotal)}</div>
+            {insights.weekChangePct!==null&&<div style={{fontSize:13,color:insights.weekChangePct>=0?C.success:C.danger}}>{insights.weekChangePct>=0?"▲":"▼"} {Math.abs(insights.weekChangePct)}%</div>}
+          </div>
+          <div style={{fontSize:11,color:C.muted,marginTop:4}}>Semana pasada: {money(insights.lastWeekTotal)}</div>
+        </div>
+
+        {insights.topService&&(<div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"14px 16px",marginBottom:12}}>
+          <Label>Servicio más vendido este mes</Label>
+          <div style={{fontSize:15,color:C.text,marginTop:4}}>{insights.topService[0]}</div>
+          <div style={{fontSize:12,color:C.muted,marginTop:2}}>{insights.topService[1]} cita{insights.topService[1]!==1?"s":""} este mes</div>
+        </div>)}
+
+        {insights.hasDayData&&(<div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"14px 16px",marginBottom:20}}>
+          <Label>Mejor día de la semana</Label>
+          <div style={{fontSize:15,color:C.text,marginTop:4}}>{DAY_NAMES[insights.bestDayIdx]}</div>
+          <div style={{fontSize:12,color:C.muted,marginTop:2}}>{money(insights.dayTotals[insights.bestDayIdx])} acumulado histórico</div>
+        </div>)}
+
+        <div style={{fontSize:10,letterSpacing:2,color:C.muted,textTransform:"uppercase",marginBottom:10}}>Clientas inactivas (30+ días)</div>
+        {insights.inactive.length===0?(<div style={{color:C.muted,fontSize:13,textAlign:"center",padding:"16px 0",marginBottom:20}}>Ninguna clienta inactiva por ahora</div>):(insights.inactive.map(a=>{
+          const diff=daysBetween(a.date,today);
+          return(<div key={a.client} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:14,marginBottom:10}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+              <div style={{fontSize:15}}>{a.client}</div>
+              <div style={{fontSize:12,color:C.danger}}>hace {diff} días</div>
+            </div>
+            {a.phone?(<a href={buildReactivationWAMsg(a)} target="_blank" rel="noreferrer" style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,background:"rgba(37,211,102,0.15)",border:"1px solid #25D366",color:"#25D366",borderRadius:10,padding:"10px 0",fontSize:13,textDecoration:"none"}}>📲 Reactivar por WhatsApp</a>):(<div style={{fontSize:12,color:C.muted,textAlign:"center"}}>sin teléfono</div>)}
+          </div>);
+        }))}
+
+        {insights.repeatedCancellers.length>0&&(<>
+          <div style={{fontSize:10,letterSpacing:2,color:C.muted,textTransform:"uppercase",marginBottom:10,marginTop:8}}>Cancelan seguido (revisar)</div>
+          {insights.repeatedCancellers.map(name=>(
+            <div key={name} onClick={()=>{setSearchQ(name);setView("history");}} className="tap" style={{background:C.card,border:`1px solid ${C.danger}`,borderRadius:10,padding:"12px 14px",marginBottom:8,cursor:"pointer",fontSize:14}}>{name}<span style={{fontSize:11,color:C.muted,marginLeft:8}}>sus últimas 2 citas fueron canceladas</span></div>
+          ))}
+        </>)}
       </div>)}
 
       {view==="reminders"&&(<div style={{padding:"16px"}}><div style={{fontSize:10,letterSpacing:3,color:C.muted,textTransform:"uppercase",marginBottom:6}}>Recordatorios WhatsApp</div><div style={{fontSize:13,color:C.muted,marginBottom:20}}>Citas de hoy dentro de las próximas 2 horas</div>{reminderAppts.length===0&&(<div style={{textAlign:"center",padding:"40px 0"}}><div style={{fontSize:40,marginBottom:12}}>✅</div><div style={{color:C.muted,fontSize:14}}>Sin recordatorios pendientes ahora</div><div style={{color:C.muted,fontSize:12,marginTop:8}}>Regresa cuando falten 2 horas o menos</div></div>)}{reminderAppts.map(a=>{const mins=Math.round(minutesUntil(a.date,a.time));const isNow=a._rs==="ahora";return(<div key={a.id} style={{background:isNow?"rgba(201,169,110,0.08)":C.card,border:`1px solid ${isNow?C.accent:C.border}`,borderRadius:12,padding:"16px",marginBottom:12}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}><div><div style={{fontSize:16,marginBottom:3}}>{a.client}</div><div style={{fontSize:12,color:C.muted}}>{a.service}</div></div><div style={{textAlign:"right"}}><div style={{fontSize:18,color:C.accent,fontWeight:600}}>{a.time}</div><div style={{fontSize:11,marginTop:3,color:isNow?C.accent:C.muted}}>{isNow?`⏰ en ${mins} min`:`en ${Math.round(mins/60*10)/10}h`}</div></div></div><div style={{background:"rgba(0,0,0,0.35)",borderRadius:8,padding:"10px 12px",fontSize:12,color:C.muted,marginBottom:12,lineHeight:1.6,borderLeft:`2px solid ${C.border}`}}>Hola {a.client} 👋 — Cita hoy a las {a.time} para {a.service}. ¡Te esperamos! 💛</div><a href={buildWAMsg(a)} target="_blank" rel="noreferrer" style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,background:isNow?"#25D366":"rgba(37,211,102,0.15)",border:"1px solid #25D366",color:isNow?"#fff":"#25D366",borderRadius:10,padding:"12px 0",fontSize:14,textDecoration:"none",width:"100%",boxSizing:"border-box"}}><span style={{fontSize:18}}>📲</span> Enviar por WhatsApp</a></div>);})}{appts.filter(a=>a.date===today&&a.status==="confirmada"&&!a.phone).length>0&&(<div style={{marginTop:24}}><div style={{fontSize:10,letterSpacing:2,color:C.muted,textTransform:"uppercase",marginBottom:10}}>Sin teléfono registrado</div>{appts.filter(a=>a.date===today&&a.status==="confirmada"&&!a.phone).map(a=>(<div key={a.id} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"12px 14px",marginBottom:8,display:"flex",justifyContent:"space-between",alignItems:"center",opacity:0.6}}><div><div style={{fontSize:14}}>{a.client}</div><div style={{fontSize:12,color:C.muted}}>{a.service}</div></div><div style={{textAlign:"right"}}><div style={{fontSize:14,color:C.accent}}>{a.time}</div><button onClick={()=>openEdit(a)} style={{background:"none",border:"none",color:C.muted,fontSize:11,cursor:"pointer",padding:0,marginTop:4}}>+ agregar tel.</button></div></div>))}</div>)}</div>)}
