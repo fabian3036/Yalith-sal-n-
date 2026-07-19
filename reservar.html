@@ -57,7 +57,7 @@ const MONTHS=["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov",
 const fmt=d=>{const[y,m,dd]=d.split("-");return `${dd} ${MONTHS[+m-1]} ${y}`;};
 const todayStr=()=>{const d=new Date();return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;};
 const toMinutes=t=>{const[h,m]=t.split(":").map(Number);return h*60+m;};
-const SALON_WHATSAPP="9981406630";
+const SALON_WHATSAPP="9986234394";
 const cleanPhone=phone=>{const digits=phone.replace(/\D/g,"");if(digits.startsWith("52")&&digits.length>=12)return digits;return "52"+digits.replace(/^0+/,"");};
 const buildProofWAUrl=form=>{
   const msg=`¡Hola! 👋 Soy ${form.client}. Aquí está mi comprobante de anticipo de *$50* para mi cita del *${fmt(form.date)}* a las *${form.time}* (${form.service}). Adjunto la captura de mi transferencia 📎`;
