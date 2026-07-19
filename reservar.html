@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Yalith Salón" />
+  <meta name="theme-color" content="#0d0d0d" />
+  <title>Yalith Salón · Reservar cita</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+    body { background:#0d0d0d; font-family:'Georgia',serif; overscroll-behavior:none; }
+    input, select, textarea, button { font-family:'Georgia',serif; }
+    input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.7); }
+    ::-webkit-scrollbar { width:4px; }
+    ::-webkit-scrollbar-track { background:#0d0d0d; }
+    ::-webkit-scrollbar-thumb { background:#333; border-radius:4px; }
+    .tap:active { opacity:0.7; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+
+const firebaseConfig = {
+  apiKey: "AIzaSyB0QNLpDUQkvCrlZDOJXLHhhE4hDRtSjKs",
+  authDomain: "yalith-salon.firebaseapp.com",
+  projectId: "yalith-salon",
+  storageBucket: "yalith-salon.firebasestorage.app",
+  messagingSenderId: "606996435992",
+  appId: "1:606996435992:web:14a04a56fbbabbe6289f6d"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+const horariosCol = db.collection("yalith_horarios_ocupados");
+const solicitudesCol = db.collection("yalith_solicitudes");
+
+const PROMOS = [
+  {name:"Mirada Completa (pestañas + cejas)", price:599},
+  {name:"4x1 Cejas y Pestañas", price:550},
+  {name:"Laminado de Cejas Gratis (con extensiones)", price:399},
+  {name:"Retoque de pestañas", price:null},
+  {name:"Reparación", price:null}
+];
+const SERVICES = PROMOS.map(p=>p.name);
+
+const C = {bg:"#0d0d0d",card:"#161616",accent:"#c9a96e",accentFade:"rgba(201,169,110,0.12)",text:"#f0ece4",muted:"#7a7269",border:"rgba(201,169,110,0.18)",danger:"#c96e6e",success:"#6ec98a"};
+const pad=n=>String(n).padStart(2,"0");
+const MONTHS=["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+const fmt=d=>{const[y,m,dd]=d.split("-");return `${dd} ${MONTHS[+m-1]} ${y}`;};
+const todayStr=()=>{const d=new Date();return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;};
+const toMinutes=t=>{const[h,m]=t.split(":").map(Number);return h*60+m;};
+const SALON_WHATSAPP="9981406630";
+const cleanPhone=phone=>{const digits=phone.replace(/\D/g,"");if(digits.startsWith("52")&&digits.length>=12)return digits;return "52"+digits.replace(/^0+/,"");};
+const buildProofWAUrl=form=>{
+  const msg=`¡Hola! 👋 Soy ${form.client}. Aquí está mi comprobante de anticipo de *$50* para mi cita del *${fmt(form.date)}* a las *${form.time}* (${form.service}). Adjunto la captura de mi transferencia 📎`;
+  return `https://wa.me/${cleanPhone(SALON_WHATSAPP)}?text=${encodeURIComponent(msg)}`;
+};
+
+// Horario de trabajo de la lashista: 10:00am a 7:30pm, cada cita ~2 horas
+const WORK_START_MIN=10*60;
+const WORK_END_MIN=17*60+30; // último horario posible para iniciar (termina 19:30)
+const APPT_DURATION_MIN=120;
+const SLOTS=(()=>{const arr=[];for(let m=WORK_START_MIN;m<=WORK_END_MIN;m+=30){arr.push(`${pad(Math.floor(m/60))}:${pad(m%60)}`);}return arr;})();
+
+const S={btn:{display:"inline-flex",alignItems:"center",justifyContent:"center",gap:6,background:C.accentFade,border:`1px solid ${C.accent}`,color:C.accent,borderRadius:10,padding:"13px 16px",fontSize:14,cursor:"pointer",letterSpacing:0.5},input:{width:"100%",background:"#0d0d0d",border:`1px solid rgba(201,169,110,0.25)`,borderRadius:8,padding:"12px",color:C.text,fontSize:15,outline:"none"}};
+function Label({children}){return <div style={{fontSize:10,letterSpacing:2,color:C.muted,textTransform:"uppercase",marginBottom:6}}>{children}</div>;}
+function Field({label,children,style}){return <div style={{marginBottom:16,...style}}><Label>{label}</Label>{children}</div>;}
+
+function App(){
+  const[form,setForm]=useState({client:"",phone:"",service:SERVICES[0],date:todayStr(),time:"",notes:"",isReturning:false,depositConfirmed:false,proofSent:false});
+  const[occupied,setOccupied]=useState([]);
+  const[loadingSlots,setLoadingSlots]=useState(false);
+  const[submitting,setSubmitting]=useState(false);
+  const[done,setDone]=useState(false);
+  const[err,setErr]=useState("");
+
+  const setF=(k,v)=>setForm(f=>({...f,[k]:v,...(k==="date"?{time:""}:{})}));
+
+  useEffect(()=>{
+    let cancelled=false;
+    setLoadingSlots(true);
+    horariosCol.where("date","==",form.date).get()
+      .then(snap=>{if(!cancelled)setOccupied(snap.docs.map(d=>d.data().time));})
+      .catch(e=>console.error(e))
+      .finally(()=>{if(!cancelled)setLoadingSlots(false);});
+    return ()=>{cancelled=true;};
+  },[form.date]);
+
+  const isSlotTaken=slot=>occupied.some(o=>Math.abs(toMinutes(slot)-toMinutes(o))<APPT_DURATION_MIN);
+  const availableSlots=useMemo(()=>SLOTS.map(s=>({time:s,taken:isSlotTaken(s)})),[occupied]);
+
+  const canSubmit=form.client.trim()&&form.date&&form.time&&form.service&&form.depositConfirmed&&form.proofSent;
+
+  const submit=async()=>{
+    if(!canSubmit)return;
+    setSubmitting(true);setErr("");
+    try{
+      await solicitudesCol.add({
+        client:form.client.trim(),
+        phone:form.phone.trim(),
+        service:form.service,
+        date:form.date,
+        time:form.time,
+        notes:form.notes.trim(),
+        isNewClient:!form.isReturning,
+        depositAmount:50,
+        depositConfirmed:form.depositConfirmed,
+        proofSentByWhatsapp:form.proofSent,
+        status:"pendiente",
+        createdAt:firebase.firestore.FieldValue.serverTimestamp()
+      });
+      setDone(true);
+    }catch(e){console.error(e);setErr("No se pudo enviar tu solicitud. Intenta de nuevo o escríbenos directo por WhatsApp.");}
+    setSubmitting(false);
+  };
+
+  if(done){
+    return(<div style={{minHeight:"100vh",background:C.bg,color:C.text,display:"flex",alignItems:"center",justifyContent:"center",padding:24}}>
+      <div style={{textAlign:"center",maxWidth:400}}>
+        <div style={{fontSize:52,marginBottom:16}}>💛</div>
+        <div style={{fontSize:22,marginBottom:12}}>¡Solicitud enviada!</div>
+        <div style={{fontSize:14,color:C.muted,lineHeight:1.6}}>Yalith Salón revisará tu solicitud y te confirmará por WhatsApp lo antes posible. ¡Gracias por tu preferencia!</div>
+      </div>
+    </div>);
+  }
+
+  return(
+    <div style={{minHeight:"100vh",background:C.bg,color:C.text,maxWidth:480,margin:"0 auto",paddingBottom:60}}>
+      <div style={{padding:"max(env(safe-area-inset-top),24px) 20px 20px",borderBottom:`1px solid ${C.border}`}}>
+        <div style={{fontSize:10,letterSpacing:4,color:C.accent,textTransform:"uppercase",marginBottom:4}}>Reservar cita</div>
+        <div style={{fontSize:26,fontWeight:400,letterSpacing:1}}>Yalith Salón</div>
+        <div style={{fontSize:12,color:C.muted,marginTop:6}}>Horario de atención: 10:00am – 7:30pm</div>
+      </div>
+
+      <div style={{padding:20}}>
+        <Field label="Nombre completo">
+          <input style={S.input} value={form.client} onChange={e=>setF("client",e.target.value)} placeholder="Tu nombre"/>
+        </Field>
+        <Field label="Teléfono (WhatsApp)">
+          <input style={S.input} value={form.phone} onChange={e=>setF("phone",e.target.value)} placeholder="9981234567" inputMode="numeric"/>
+        </Field>
+        <Field label="¿Qué servicio te interesa?">
+          <select style={S.input} value={form.service} onChange={e=>setF("service",e.target.value)}>
+            {SERVICES.map(s=><option key={s}>{s}</option>)}
+          </select>
+        </Field>
+        <Field label="¿Ya eres clienta de Yalith Salón?">
+          <div style={{display:"flex",gap:8}}>
+            <button type="button" onClick={()=>setF("isReturning",false)} className="tap" style={{flex:1,padding:"11px 0",borderRadius:8,border:`1px solid ${!form.isReturning?C.accent:C.border}`,background:!form.isReturning?C.accentFade:"transparent",color:!form.isReturning?C.accent:C.muted,fontSize:13,cursor:"pointer"}}>Soy nueva</button>
+            <button type="button" onClick={()=>setF("isReturning",true)} className="tap" style={{flex:1,padding:"11px 0",borderRadius:8,border:`1px solid ${form.isReturning?C.accent:C.border}`,background:form.isReturning?C.accentFade:"transparent",color:form.isReturning?C.accent:C.muted,fontSize:13,cursor:"pointer"}}>Ya soy clienta</button>
+          </div>
+        </Field>
+        <Field label="Fecha">
+          <input style={S.input} type="date" min={todayStr()} value={form.date} onChange={e=>setF("date",e.target.value)}/>
+        </Field>
+        <Field label={`Horario disponible · ${fmt(form.date)}`}>
+          {loadingSlots?(<div style={{color:C.muted,fontSize:13,padding:"12px 0"}}>Cargando horarios…</div>):(
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
+              {availableSlots.map(({time,taken})=>(
+                <button key={time} type="button" disabled={taken} onClick={()=>setF("time",time)} className={taken?"":"tap"} style={{padding:"11px 0",borderRadius:8,border:`1px solid ${form.time===time?C.accent:C.border}`,background:form.time===time?C.accentFade:taken?"rgba(255,255,255,0.02)":"transparent",color:taken?C.muted:form.time===time?C.accent:C.text,fontSize:13,cursor:taken?"not-allowed":"pointer",textDecoration:taken?"line-through":"none",opacity:taken?0.4:1}}>{time}</button>
+              ))}
+            </div>
+          )}
+          {!loadingSlots&&availableSlots.every(s=>s.taken)&&<div style={{color:C.danger,fontSize:12,marginTop:8}}>No hay horarios disponibles este día, prueba otra fecha.</div>}
+        </Field>
+        <div style={{background:C.card,border:`1px solid ${C.accent}`,borderRadius:12,padding:16,marginBottom:16}}>
+          <Label>Anticipo para confirmar tu cita</Label>
+          <div style={{fontSize:14,color:C.text,marginBottom:10,lineHeight:1.6}}>Para apartar tu horario, transfiere <b>$50 MXN</b> a la siguiente cuenta. El resto se paga al finalizar tu servicio.</div>
+          <div style={{background:"#0d0d0d",borderRadius:8,padding:12,fontSize:13,color:C.muted,lineHeight:1.8}}>
+            <div><b style={{color:C.text}}>Banco:</b> Mercado Pago</div>
+            <div><b style={{color:C.text}}>CLABE:</b> 722969020490162889</div>
+            <div><b style={{color:C.text}}>Titular:</b> Fabián Barboza</div>
+          </div>
+        </div>
+        <Field label="¿Ya hiciste la transferencia de $50?">
+          <div style={{display:"flex",gap:8}}>
+            <button type="button" onClick={()=>setF("depositConfirmed",false)} className="tap" style={{flex:1,padding:"11px 0",borderRadius:8,border:`1px solid ${!form.depositConfirmed?C.accent:C.border}`,background:!form.depositConfirmed?C.accentFade:"transparent",color:!form.depositConfirmed?C.accent:C.muted,fontSize:13,cursor:"pointer"}}>Aún no</button>
+            <button type="button" onClick={()=>setF("depositConfirmed",true)} className="tap" style={{flex:1,padding:"11px 0",borderRadius:8,border:`1px solid ${form.depositConfirmed?C.success:C.border}`,background:form.depositConfirmed?"rgba(110,201,138,0.12)":"transparent",color:form.depositConfirmed?C.success:C.muted,fontSize:13,cursor:"pointer"}}>Ya transferí</button>
+          </div>
+        </Field>
+        {form.depositConfirmed&&(<>
+          <Field label="Envía tu comprobante por WhatsApp">
+            <div style={{fontSize:12,color:C.muted,marginBottom:10,lineHeight:1.5}}>Toca el botón, se abrirá WhatsApp con un mensaje listo — adjunta ahí la foto o captura de tu transferencia antes de enviarlo.</div>
+            <a href={buildProofWAUrl(form)} target="_blank" rel="noreferrer" style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,background:"rgba(37,211,102,0.15)",border:"1px solid #25D366",color:"#25D366",borderRadius:10,padding:"13px 0",fontSize:14,textDecoration:"none"}}>📲 Enviar comprobante por WhatsApp</a>
+          </Field>
+          <Field label="¿Ya enviaste tu comprobante por WhatsApp?">
+            <div style={{display:"flex",gap:8}}>
+              <button type="button" onClick={()=>setF("proofSent",false)} className="tap" style={{flex:1,padding:"11px 0",borderRadius:8,border:`1px solid ${!form.proofSent?C.accent:C.border}`,background:!form.proofSent?C.accentFade:"transparent",color:!form.proofSent?C.accent:C.muted,fontSize:13,cursor:"pointer"}}>Aún no</button>
+              <button type="button" onClick={()=>setF("proofSent",true)} className="tap" style={{flex:1,padding:"11px 0",borderRadius:8,border:`1px solid ${form.proofSent?C.success:C.border}`,background:form.proofSent?"rgba(110,201,138,0.12)":"transparent",color:form.proofSent?C.success:C.muted,fontSize:13,cursor:"pointer"}}>Ya lo envié</button>
+            </div>
+          </Field>
+        </>)}
+        <Field label="Notas (opcional)">
+          <textarea style={{...S.input,height:70,resize:"none"}} value={form.notes} onChange={e=>setF("notes",e.target.value)} placeholder="Alergias, preferencias…"/>
+        </Field>
+
+        {err&&<div style={{color:C.danger,fontSize:13,marginBottom:12}}>{err}</div>}
+
+        <button onClick={submit} disabled={!canSubmit||submitting} className="tap" style={{...S.btn,width:"100%",opacity:(!canSubmit||submitting)?0.5:1,padding:"15px 0",fontSize:15}}>
+          {submitting?"Enviando…":"Enviar solicitud de cita"}
+        </button>
+        <div style={{fontSize:11,color:C.muted,textAlign:"center",marginTop:12}}>Tu cita quedará pendiente de confirmación. Te avisaremos por WhatsApp.</div>
+      </div>
+    </div>
+  );
+}
+ReactDOM.render(<App/>, document.getElementById("root"));
+</script>
+</body>
+</html>
