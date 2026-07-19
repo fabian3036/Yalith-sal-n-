@@ -155,9 +155,9 @@ function App(){
           const list=snap.docs.map(d=>normalizeAppt({id:d.id,...d.data()}));
           if(list.length>0){setAppts(list);saveAppts(list);}
           setCloudStatus("conectado");
-        },err=>{console.error(err);setCloudStatus("error: "+(err.code||err.message||"desconocido"));});
+        },err=>{console.error(err);setCloudStatus("sin conexión (usando datos locales)");});
       })
-      .catch(err=>{console.error("auth/migración error",err);setCloudStatus("error: "+(err.code||err.message||"desconocido"));});
+      .catch(err=>{console.error("auth/migración error",err);setCloudStatus("sin conexión (usando datos locales)");});
     return ()=>{cancelled=true;unsub();};
   },[]);
   const[savedMsg,setSavedMsg]=useState("");
