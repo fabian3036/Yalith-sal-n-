@@ -220,7 +220,23 @@ function App(){
     confirmed.forEach(a=>{const idx=(new Date(a.date+"T00:00:00").getDay()+6)%7;dayTotals[idx]+=(parseFloat(a.price)||0);});
     let bestDayIdx=0;dayTotals.forEach((v,i)=>{if(v>dayTotals[bestDayIdx])bestDayIdx=i;});
     const hasDayData=dayTotals.some(v=>v>0);
-    return {inactive,thisWeekTotal,lastWeekTotal,weekChangePct,repeatedCancellers,topService,dayTotals,bestDayIdx,hasDayData};
+    // Tasa de cancelación del mes actual (sobre todas las citas del mes, sin importar estado)
+    const monthAllAppts=appts.filter(a=>a.date.slice(0,7)===today.slice(0,7));
+    const monthCancelled=monthAllAppts.filter(a=>a.status==="cancelada").length;
+    const cancelRatePct=monthAllAppts.length>0?Math.round((monthCancelled/monthAllAppts.length)*100):null;
+    // Anticipo: % de citas confirmadas con anticipo vs sin anticipo, y promedio cobrado
+    const withDeposit=confirmed.filter(a=>parseFloat(a.deposit)>0);
+    const withoutDeposit=confirmed.filter(a=>!(parseFloat(a.deposit)>0));
+    const depositPct=confirmed.length>0?Math.round((withDeposit.length/confirmed.length)*100):null;
+    const avgDeposit=withDeposit.length>0?Math.round(withDeposit.reduce((s,a)=>s+parseFloat(a.deposit),0)/withDeposit.length):0;
+    // Clientas nuevas vs recurrentes este mes (por cita registrada)
+    const newCount=monthAppts.filter(a=>a.isNew).length;
+    const returningCount=monthAppts.length-newCount;
+    // Top 5 clientas que más han gastado (histórico, citas confirmadas)
+    const spendByClient={};
+    confirmed.forEach(a=>{spendByClient[a.client]=(spendByClient[a.client]||0)+(parseFloat(a.price)||0);});
+    const topSpenders=Object.entries(spendByClient).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]).slice(0,5);
+    return {inactive,thisWeekTotal,lastWeekTotal,weekChangePct,repeatedCancellers,topService,dayTotals,bestDayIdx,hasDayData,cancelRatePct,monthCancelled,monthAllApptsCount:monthAllAppts.length,depositPct,avgDeposit,withDepositCount:withDeposit.length,withoutDepositCount:withoutDeposit.length,newCount,returningCount,topSpenders};
   },[appts,today]);
   const insightsCount=insights.inactive.length+insights.repeatedCancellers.length;
 
@@ -340,6 +356,36 @@ function App(){
           <Label>Mejor día de la semana</Label>
           <div style={{fontSize:15,color:C.text,marginTop:4}}>{DAY_NAMES[insights.bestDayIdx]}</div>
           <div style={{fontSize:12,color:C.muted,marginTop:2}}>{money(insights.dayTotals[insights.bestDayIdx])} acumulado histórico</div>
+        </div>)}
+
+        {insights.cancelRatePct!==null&&(<div style={{background:C.card,border:`1px solid ${insights.cancelRatePct>=20?C.danger:C.border}`,borderRadius:12,padding:"14px 16px",marginBottom:12}}>
+          <Label>Tasa de cancelación este mes</Label>
+          <div style={{fontSize:22,color:insights.cancelRatePct>=20?C.danger:C.text,fontWeight:600,marginTop:4}}>{insights.cancelRatePct}%</div>
+          <div style={{fontSize:12,color:C.muted,marginTop:2}}>{insights.monthCancelled} de {insights.monthAllApptsCount} citas canceladas</div>
+        </div>)}
+
+        {insights.depositPct!==null&&(<div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"14px 16px",marginBottom:12}}>
+          <Label>Anticipos</Label>
+          <div style={{fontSize:15,color:C.text,marginTop:4}}>{insights.depositPct}% de tus citas llevan anticipo</div>
+          <div style={{fontSize:12,color:C.muted,marginTop:2}}>{insights.withDepositCount} con anticipo (promedio {money(insights.avgDeposit)}) · {insights.withoutDepositCount} sin anticipo</div>
+        </div>)}
+
+        {(insights.newCount+insights.returningCount)>0&&(<div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"14px 16px",marginBottom:20}}>
+          <Label>Nuevas vs. recurrentes este mes</Label>
+          <div style={{display:"flex",gap:20,marginTop:6}}>
+            <div><div style={{fontSize:20,color:C.success,fontWeight:600}}>{insights.newCount}</div><div style={{fontSize:11,color:C.muted}}>nuevas</div></div>
+            <div><div style={{fontSize:20,color:C.accent,fontWeight:600}}>{insights.returningCount}</div><div style={{fontSize:11,color:C.muted}}>recurrentes</div></div>
+          </div>
+        </div>)}
+
+        {insights.topSpenders.length>0&&(<div style={{marginBottom:20}}>
+          <div style={{fontSize:10,letterSpacing:2,color:C.muted,textTransform:"uppercase",marginBottom:10}}>Top 5 clientas (gasto histórico)</div>
+          {insights.topSpenders.map(([name,total],i)=>(
+            <div key={name} onClick={()=>{setSearchQ(name);setView("history");}} className="tap" style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"11px 14px",marginBottom:8,cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div style={{fontSize:14}}>{i+1}. {name}</div>
+              <div style={{fontSize:14,color:C.success,fontWeight:600}}>{money(total)}</div>
+            </div>
+          ))}
         </div>)}
 
         <div style={{fontSize:10,letterSpacing:2,color:C.muted,textTransform:"uppercase",marginBottom:10}}>Clientas inactivas (30+ días)</div>
