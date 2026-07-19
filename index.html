@@ -46,6 +46,8 @@ const auth = firebase.auth();
 const agendaDocRef = db.collection("yalith").doc("agenda"); // documento viejo, solo se usa para migrar datos una vez
 const citasCol = db.collection("yalith_citas"); // cada cita es su propio documento
 const clientesCol = db.collection("yalith_clientes"); // metadatos por clienta (ej. VIP)
+const horariosCol = db.collection("yalith_horarios_ocupados"); // solo fecha+hora, lectura pública para la página de reservas
+const solicitudesCol = db.collection("yalith_solicitudes"); // solicitudes de clientas, pendientes de aprobación
 const sanitizeClientId = name=>encodeURIComponent(name.trim().toLowerCase()).slice(0,300);
 const SHARED_LOGIN = { email: "fabianbarboza@yahoo.com", password: "303036" };
 const ensureSignedIn = () => auth.currentUser
@@ -109,8 +111,25 @@ const loadAppts=()=>{
 };
 const saveAppts=appts=>{try{localStorage.setItem(STORAGE_KEY,JSON.stringify(appts));return true;}catch{return false;}};
 // Escritura de una cita individual como su propio documento en la colección yalith_citas
-const putAppt=async appt=>{try{await citasCol.doc(String(appt.id)).set(appt,{merge:true});}catch(e){console.error("firestore write error",e);}};
-const patchAppt=async(id,fields)=>{try{await citasCol.doc(String(id)).set(fields,{merge:true});}catch(e){console.error("firestore write error",e);}};
+const syncAvailability=async appt=>{
+  try{
+    if(appt.status==="confirmada"){
+      await horariosCol.doc(String(appt.id)).set({date:appt.date,time:appt.time});
+    }else{
+      await horariosCol.doc(String(appt.id)).delete();
+    }
+  }catch(e){console.error("sync availability error",e);}
+};
+const putAppt=async appt=>{try{await citasCol.doc(String(appt.id)).set(appt,{merge:true});syncAvailability(appt);}catch(e){console.error("firestore write error",e);}};
+const patchAppt=async(id,fields)=>{
+  try{
+    await citasCol.doc(String(id)).set(fields,{merge:true});
+    if("status" in fields||"date" in fields||"time" in fields){
+      const doc=await citasCol.doc(String(id)).get();
+      if(doc.exists)syncAvailability({id,...doc.data()});
+    }
+  }catch(e){console.error("firestore write error",e);}
+};
 // Migración única: si la colección nueva está vacía, sube lo que haya en el documento viejo (o en caché local)
 const migrateIfNeeded=async()=>{
   try{
@@ -123,8 +142,12 @@ const migrateIfNeeded=async()=>{
     }else{
       source=loadAppts();
     }
+    const clean=source.map(normalizeAppt);
     const batch=db.batch();
-    source.map(normalizeAppt).forEach(a=>{batch.set(citasCol.doc(String(a.id)),a);});
+    clean.forEach(a=>{
+      batch.set(citasCol.doc(String(a.id)),a);
+      if(a.status==="confirmada")batch.set(horariosCol.doc(String(a.id)),{date:a.date,time:a.time});
+    });
     await batch.commit();
   }catch(e){console.error("migration error",e);}
 };
@@ -162,9 +185,11 @@ function App(){
   const[appts,setAppts]=useState(loadAppts);
   const[cloudStatus,setCloudStatus]=useState("conectando");
   const[vipMap,setVipMap]=useState({});
+  const[requests,setRequests]=useState([]);
   useEffect(()=>{
     let unsub=()=>{};
     let unsubClientes=()=>{};
+    let unsubRequests=()=>{};
     let cancelled=false;
     ensureSignedIn()
       .then(()=>migrateIfNeeded())
@@ -180,9 +205,12 @@ function App(){
           snap.docs.forEach(d=>{if(d.data().vip)map[d.data().name||d.id]=true;});
           setVipMap(map);
         },err=>console.error(err));
+        unsubRequests=solicitudesCol.onSnapshot(snap=>{
+          setRequests(snap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time)));
+        },err=>console.error(err));
       })
       .catch(err=>{console.error("auth/migración error",err);setCloudStatus("sin conexión (usando datos locales)");});
-    return ()=>{cancelled=true;unsub();unsubClientes();};
+    return ()=>{cancelled=true;unsub();unsubClientes();unsubRequests();};
   },[]);
   const[savedMsg,setSavedMsg]=useState("");
   const[view,setView]=useState("week");
@@ -242,6 +270,13 @@ function App(){
     setVipMap(prev=>({...prev,[name]:newVal}));
     clientesCol.doc(sanitizeClientId(name)).set({name,vip:newVal},{merge:true}).catch(e=>console.error(e));
   };
+  const approveRequest=req=>{
+    const newAppt={client:req.client,phone:req.phone||"",service:req.service,date:req.date,time:req.time,notes:req.notes||"",price:priceForService(req.service),deposit:(req.depositConfirmed&&req.proofSentByWhatsapp)?String(req.depositAmount||50):"",isNew:req.isNewClient!==undefined?req.isNewClient:true,id:uid(),status:"confirmada",retouchDismissed:false};
+    setAppts(prev=>[...prev,newAppt]);
+    putAppt(newAppt);
+    solicitudesCol.doc(req.id).delete().catch(e=>console.error(e));
+  };
+  const rejectRequest=id=>{solicitudesCol.doc(id).delete().catch(e=>console.error(e));};
 
   // ---- Consejos automáticos ----
   const insights=useMemo(()=>{
@@ -319,12 +354,13 @@ function App(){
             </div>
           </div>
           <div style={{display:"flex",overflowX:"auto"}}>
-            {[["week","Semana"],["day","Día"],["money","💰"],["clients","Clientas"],["history","Historial"],["retouch","🔁"],["advice","💡"],["reminders","📲"]].map(([v,l])=>(
+            {[["week","Semana"],["day","Día"],["money","💰"],["clients","Clientas"],["history","Historial"],["retouch","🔁"],["advice","💡"],["requests","📋"],["reminders","📲"]].map(([v,l])=>(
               <button key={v} onClick={()=>setView(v)} style={{flex:"1 0 auto",minWidth:46,padding:"10px 0",background:"none",border:"none",cursor:"pointer",color:view===v?C.accent:C.muted,borderBottom:view===v?`2px solid ${C.accent}`:"2px solid transparent",fontSize:13,position:"relative"}}>
                 {l}
                 {v==="reminders"&&badge>0&&<span style={{position:"absolute",top:6,right:"14%",background:C.danger,color:"#fff",fontSize:9,borderRadius:10,padding:"1px 5px"}}>{badge}</span>}
                 {v==="retouch"&&retouchBadge>0&&<span style={{position:"absolute",top:6,right:"14%",background:C.danger,color:"#fff",fontSize:9,borderRadius:10,padding:"1px 5px"}}>{retouchBadge}</span>}
                 {v==="advice"&&insightsCount>0&&<span style={{position:"absolute",top:6,right:"14%",background:C.danger,color:"#fff",fontSize:9,borderRadius:10,padding:"1px 5px"}}>{insightsCount}</span>}
+                {v==="requests"&&requests.length>0&&<span style={{position:"absolute",top:6,right:"14%",background:C.danger,color:"#fff",fontSize:9,borderRadius:10,padding:"1px 5px"}}>{requests.length}</span>}
               </button>
             ))}
           </div>
@@ -464,6 +500,29 @@ function App(){
             <div key={name} onClick={()=>{setSearchQ(name);setView("history");}} className="tap" style={{background:C.card,border:`1px solid ${C.danger}`,borderRadius:10,padding:"12px 14px",marginBottom:8,cursor:"pointer",fontSize:14}}>{name}<span style={{fontSize:11,color:C.muted,marginLeft:8}}>sus últimas 2 citas fueron canceladas o no llegó</span></div>
           ))}
         </>)}
+      </div>)}
+
+      {view==="requests"&&(<div style={{padding:"16px"}}>
+        <div style={{fontSize:10,letterSpacing:3,color:C.muted,textTransform:"uppercase",marginBottom:6}}>Solicitudes de clientas</div>
+        <div style={{fontSize:13,color:C.muted,marginBottom:20}}>Reservadas desde la página pública, pendientes de tu aprobación</div>
+        {requests.length===0&&(<div style={{textAlign:"center",padding:"40px 0"}}><div style={{fontSize:40,marginBottom:12}}>📋</div><div style={{color:C.muted,fontSize:14}}>Sin solicitudes pendientes</div></div>)}
+        {requests.map(r=>(
+          <div key={r.id} style={{background:C.card,border:`1px solid ${C.accent}`,borderRadius:12,padding:16,marginBottom:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+              <div><div style={{fontSize:16,marginBottom:3}}>{r.client}</div><div style={{fontSize:12,color:C.muted}}>{r.service}</div></div>
+              <div style={{textAlign:"right"}}><div style={{fontSize:15,color:C.accent,fontWeight:600}}>{r.time}</div><div style={{fontSize:11,color:C.muted,marginTop:2}}>{fmt(r.date)}</div></div>
+            </div>
+            {r.phone&&<div style={{fontSize:12,color:C.muted,marginBottom:4}}>Tel: {r.phone}</div>}
+            {r.notes&&<div style={{fontSize:12,color:C.muted,marginBottom:8}}>Notas: {r.notes}</div>}
+            <div style={{background:r.depositConfirmed?"rgba(110,201,138,0.1)":"rgba(201,110,110,0.1)",border:`1px solid ${r.depositConfirmed?C.success:C.danger}`,borderRadius:8,padding:"8px 10px",marginBottom:8,fontSize:12}}>
+              {r.depositConfirmed&&r.proofSentByWhatsapp?(<span style={{color:C.success}}>✓ Dice haber transferido ${r.depositAmount||50} y enviado su comprobante por WhatsApp — búscalo por su nombre y verifica antes de aprobar</span>):(<span style={{color:C.danger}}>⚠ No confirmó el anticipo o no envió comprobante — revisa antes de aprobar</span>)}
+            </div>
+            <div style={{display:"flex",gap:8,marginTop:8}}>
+              <button onClick={()=>approveRequest(r)} className="tap" style={{flex:1,background:"rgba(110,201,138,0.15)",border:`1px solid ${C.success}`,color:C.success,borderRadius:10,padding:"11px 0",fontSize:13,cursor:"pointer"}}>✓ Aprobar</button>
+              <button onClick={()=>rejectRequest(r.id)} className="tap" style={{flex:1,background:"rgba(201,110,110,0.15)",border:`1px solid ${C.danger}`,color:C.danger,borderRadius:10,padding:"11px 0",fontSize:13,cursor:"pointer"}}>✕ Rechazar</button>
+            </div>
+          </div>
+        ))}
       </div>)}
 
       {view==="reminders"&&(<div style={{padding:"16px"}}><div style={{fontSize:10,letterSpacing:3,color:C.muted,textTransform:"uppercase",marginBottom:6}}>Recordatorios WhatsApp</div><div style={{fontSize:13,color:C.muted,marginBottom:20}}>Citas de hoy dentro de las próximas 2 horas</div>{reminderAppts.length===0&&(<div style={{textAlign:"center",padding:"40px 0"}}><div style={{fontSize:40,marginBottom:12}}>✅</div><div style={{color:C.muted,fontSize:14}}>Sin recordatorios pendientes ahora</div><div style={{color:C.muted,fontSize:12,marginTop:8}}>Regresa cuando falten 2 horas o menos</div></div>)}{reminderAppts.map(a=>{const mins=Math.round(minutesUntil(a.date,a.time));const isNow=a._rs==="ahora";return(<div key={a.id} style={{background:isNow?"rgba(201,169,110,0.08)":C.card,border:`1px solid ${isNow?C.accent:C.border}`,borderRadius:12,padding:"16px",marginBottom:12}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}><div><div style={{fontSize:16,marginBottom:3}}>{a.client}</div><div style={{fontSize:12,color:C.muted}}>{a.service}</div></div><div style={{textAlign:"right"}}><div style={{fontSize:18,color:C.accent,fontWeight:600}}>{a.time}</div><div style={{fontSize:11,marginTop:3,color:isNow?C.accent:C.muted}}>{isNow?`⏰ en ${mins} min`:`en ${Math.round(mins/60*10)/10}h`}</div></div></div><div style={{background:"rgba(0,0,0,0.35)",borderRadius:8,padding:"10px 12px",fontSize:12,color:C.muted,marginBottom:12,lineHeight:1.6,borderLeft:`2px solid ${C.border}`}}>Hola {a.client} 👋 — Cita hoy a las {a.time} para {a.service}. ¡Te esperamos! 💛</div><a href={buildWAMsg(a)} target="_blank" rel="noreferrer" style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,background:isNow?"#25D366":"rgba(37,211,102,0.15)",border:"1px solid #25D366",color:isNow?"#fff":"#25D366",borderRadius:10,padding:"12px 0",fontSize:14,textDecoration:"none",width:"100%",boxSizing:"border-box"}}><span style={{fontSize:18}}>📲</span> Enviar por WhatsApp</a></div>);})}{appts.filter(a=>a.date===today&&a.status==="confirmada"&&!a.phone).length>0&&(<div style={{marginTop:24}}><div style={{fontSize:10,letterSpacing:2,color:C.muted,textTransform:"uppercase",marginBottom:10}}>Sin teléfono registrado</div>{appts.filter(a=>a.date===today&&a.status==="confirmada"&&!a.phone).map(a=>(<div key={a.id} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"12px 14px",marginBottom:8,display:"flex",justifyContent:"space-between",alignItems:"center",opacity:0.6}}><div><div style={{fontSize:14}}>{a.client}</div><div style={{fontSize:12,color:C.muted}}>{a.service}</div></div><div style={{textAlign:"right"}}><div style={{fontSize:14,color:C.accent}}>{a.time}</div><button onClick={()=>openEdit(a)} style={{background:"none",border:"none",color:C.muted,fontSize:11,cursor:"pointer",padding:0,marginTop:4}}>+ agregar tel.</button></div></div>))}</div>)}</div>)}
