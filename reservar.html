@@ -66,8 +66,8 @@ const buildProofWAUrl=form=>{
 
 // Horario de trabajo de la lashista: 10:00am a 7:30pm, cada cita ~2 horas
 const WORK_START_MIN=10*60;
-const WORK_END_MIN=17*60+30; // último horario posible para iniciar (termina 19:30)
-const APPT_DURATION_MIN=120;
+const WORK_END_MIN=19*60+30; // 7:30pm también puede ser hora de inicio
+const APPT_DURATION_MIN=150; // ~2 a 2.5 horas por cita, usamos el margen más amplio
 const SLOTS=(()=>{const arr=[];for(let m=WORK_START_MIN;m<=WORK_END_MIN;m+=30){arr.push(`${pad(Math.floor(m/60))}:${pad(m%60)}`);}return arr;})();
 
 const S={btn:{display:"inline-flex",alignItems:"center",justifyContent:"center",gap:6,background:C.accentFade,border:`1px solid ${C.accent}`,color:C.accent,borderRadius:10,padding:"13px 16px",fontSize:14,cursor:"pointer",letterSpacing:0.5},input:{width:"100%",background:"#0d0d0d",border:`1px solid rgba(201,169,110,0.25)`,borderRadius:8,padding:"12px",color:C.text,fontSize:15,outline:"none"}};
