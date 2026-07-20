@@ -42,12 +42,13 @@ const db = firebase.firestore();
 const horariosCol = db.collection("yalith_horarios_ocupados");
 const solicitudesCol = db.collection("yalith_solicitudes");
 
+const money=n=>`$${(n||0).toLocaleString("es-MX",{minimumFractionDigits:0,maximumFractionDigits:0})}`;
 const PROMOS = [
-  {name:"Mirada Completa (pestañas + cejas)", price:599},
-  {name:"4x1 Cejas y Pestañas", price:550},
-  {name:"Laminado de Cejas Gratis (con extensiones)", price:399},
-  {name:"Retoque de pestañas", price:null},
-  {name:"Reparación", price:null}
+  {name:"Mirada Completa (pestañas + cejas)", price:599, label:"Mirada Completa (pestañas + cejas) — $599"},
+  {name:"4x1 Cejas y Pestañas", price:550, label:"4x1 Cejas y Pestañas — $550"},
+  {name:"Laminado de Cejas Gratis (con extensiones)", price:399, label:"Laminado de Cejas Gratis (con extensiones) — $399"},
+  {name:"Retoque de pestañas", price:null, label:"Retoque de pestañas — precio a definir"},
+  {name:"Reparación", price:null, label:"Reparación — precio a definir"}
 ];
 const SERVICES = PROMOS.map(p=>p.name);
 
@@ -153,7 +154,7 @@ function App(){
         </Field>
         <Field label="¿Qué servicio te interesa?">
           <select style={S.input} value={form.service} onChange={e=>setF("service",e.target.value)}>
-            {SERVICES.map(s=><option key={s}>{s}</option>)}
+            {PROMOS.map(p=><option key={p.name} value={p.name}>{p.label}</option>)}
           </select>
         </Field>
         <Field label="¿Ya eres clienta de Yalith Salón?">
