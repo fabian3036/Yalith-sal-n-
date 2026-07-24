@@ -48,6 +48,7 @@ const citasCol = db.collection("yalith_citas"); // cada cita es su propio docume
 const clientesCol = db.collection("yalith_clientes"); // metadatos por clienta (ej. VIP)
 const horariosCol = db.collection("yalith_horarios_ocupados"); // solo fecha+hora, lectura pública para la página de reservas
 const solicitudesCol = db.collection("yalith_solicitudes"); // solicitudes de clientas, pendientes de aprobación
+const bloqueosCol = db.collection("yalith_bloqueos"); // horarios bloqueados manualmente (comida, día libre, etc.)
 const sanitizeClientId = name=>encodeURIComponent(name.trim().toLowerCase()).slice(0,300);
 const SHARED_LOGIN = { email: "fabianbarboza@yahoo.com", password: "303036" };
 const ensureSignedIn = () => auth.currentUser
@@ -66,7 +67,9 @@ const priceForService = name=>{const p=PROMOS.find(x=>x.name===name);return (p&&
 // Todas las promociones (incluido el retoque) generan recordatorio de retoque a 15 días
 const RETOUCH_SERVICES = PROMOS.map(p=>p.name);
 const RETOUCH_DAYS = 15;
-const C = {bg:"#0d0d0d",card:"#161616",accent:"#c9a96e",accentFade:"rgba(201,169,110,0.12)",text:"#f0ece4",muted:"#7a7269",border:"rgba(201,169,110,0.18)",danger:"#c96e6e",success:"#6ec98a",warning:"#e0a458",vip:"#d4af37"};
+const DARK_PALETTE = {bg:"#0d0d0d",card:"#161616",accent:"#c9a96e",accentFade:"rgba(201,169,110,0.12)",text:"#f0ece4",muted:"#7a7269",border:"rgba(201,169,110,0.18)",danger:"#c96e6e",success:"#6ec98a",warning:"#e0a458",vip:"#d4af37"};
+const LIGHT_PALETTE = {bg:"#faf7f2",card:"#ffffff",accent:"#9c7a3c",accentFade:"rgba(156,122,60,0.10)",text:"#2b2620",muted:"#8a8074",border:"rgba(156,122,60,0.28)",danger:"#b23b3b",success:"#3f8f5f",warning:"#b3792e",vip:"#a8842a"};
+let C = {...DARK_PALETTE};
 const pad=n=>String(n).padStart(2,"0");
 const MONTHS=["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
 const fmt=d=>{const[y,m,dd]=d.split("-");return `${dd} ${MONTHS[+m-1]} ${y}`;};
@@ -193,14 +196,29 @@ function HistoryRow({a,onClick}){
 const STATUS_LABELS={confirmada:"Confirmada",cancelada:"Canceló",no_llego:"No llegó"};
 const STATUS_COLORS={confirmada:"success",cancelada:"danger",no_llego:"warning"};
 function App(){
+  const[theme,setTheme]=useState(()=>{try{return localStorage.getItem("yalith_theme")||"dark";}catch{return "dark";}});
+  const toggleTheme=()=>{
+    setTheme(prev=>{
+      const next=prev==="dark"?"light":"dark";
+      C=next==="dark"?{...DARK_PALETTE}:{...LIGHT_PALETTE};
+      try{localStorage.setItem("yalith_theme",next);}catch{}
+      return next;
+    });
+  };
+  useEffect(()=>{
+    C=theme==="dark"?{...DARK_PALETTE}:{...LIGHT_PALETTE};
+    document.body.style.background=C.bg;
+  },[theme]);
   const[appts,setAppts]=useState(loadAppts);
   const[cloudStatus,setCloudStatus]=useState("conectando");
   const[vipMap,setVipMap]=useState({});
   const[requests,setRequests]=useState([]);
+  const[blocks,setBlocks]=useState([]);
   useEffect(()=>{
     let unsub=()=>{};
     let unsubClientes=()=>{};
     let unsubRequests=()=>{};
+    let unsubBlocks=()=>{};
     let cancelled=false;
     ensureSignedIn()
       .then(()=>migrateIfNeeded())
@@ -220,9 +238,12 @@ function App(){
         unsubRequests=solicitudesCol.onSnapshot(snap=>{
           setRequests(snap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time)));
         },err=>console.error(err));
+        unsubBlocks=bloqueosCol.onSnapshot(snap=>{
+          setBlocks(snap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time)));
+        },err=>console.error(err));
       })
       .catch(err=>{console.error("auth/migración error",err);setCloudStatus("sin conexión (usando datos locales)");});
-    return ()=>{cancelled=true;unsub();unsubClientes();unsubRequests();};
+    return ()=>{cancelled=true;unsub();unsubClientes();unsubRequests();unsubBlocks();};
   },[]);
   const[savedMsg,setSavedMsg]=useState("");
   const[view,setView]=useState("week");
@@ -234,12 +255,14 @@ function App(){
   const[searchQ,setSearchQ]=useState("");
   const[now,setNow]=useState(new Date());
   const[form,setForm]=useState({client:"",phone:"",service:SERVICES[0],date:todayStr(),time:"10:00",notes:"",price:"",deposit:"",isNew:false});
+  const[blockForm,setBlockForm]=useState({time:"10:00",label:"Comida"});
   useEffect(()=>{const t=setInterval(()=>setNow(new Date()),60000);return()=>clearInterval(t);},[]);
   useEffect(()=>{const ok=saveAppts(appts);setSavedMsg(ok?"✓ guardado":"⚠ error");const t=setTimeout(()=>setSavedMsg(""),2500);return()=>clearTimeout(t);},[appts]);
   const week=useMemo(()=>weekDates(weekBase),[weekBase]);
   const moneyWeek=useMemo(()=>weekDates(moneyWeekBase),[moneyWeekBase]);
   const byDate=useMemo(()=>{const m={};appts.forEach(a=>{if(!m[a.date])m[a.date]=[];m[a.date].push(a);});Object.keys(m).forEach(k=>m[k].sort((a,b)=>a.time.localeCompare(b.time)));return m;},[appts]);
   const dayAppts=byDate[selDate]||[];
+  const dayBlocks=useMemo(()=>blocks.filter(b=>b.date===selDate).sort((a,b)=>a.time.localeCompare(b.time)),[blocks,selDate]);
   const today=todayStr();
   const reminderAppts=useMemo(()=>appts.filter(a=>a.status==="confirmada"&&a.phone).map(a=>({...a,_rs:getReminderStatus(a)})).filter(a=>a._rs==="ahora"||a._rs==="pronto").sort((a,b)=>a.time.localeCompare(b.time)),[appts,now]);
   const badge=reminderAppts.filter(a=>a._rs==="ahora").length;
@@ -247,6 +270,7 @@ function App(){
   // ---- Función 1: dinero semanal (lunes a domingo) ----
   const moneyWeekAppts=useMemo(()=>appts.filter(a=>a.status==="confirmada"&&moneyWeek.includes(a.date)),[appts,moneyWeek]);
   const moneyWeekTotal=useMemo(()=>moneyWeekAppts.reduce((sum,a)=>sum+(parseFloat(a.price)||0),0),[moneyWeekAppts]);
+  const moneyWeekDeposits=useMemo(()=>moneyWeekAppts.reduce((sum,a)=>sum+(parseFloat(a.deposit)||0),0),[moneyWeekAppts]);
   const moneyByDay=useMemo(()=>{const m={};moneyWeek.forEach(d=>{m[d]=moneyWeekAppts.filter(a=>a.date===d).reduce((s,a)=>s+(parseFloat(a.price)||0),0);});return m;},[moneyWeek,moneyWeekAppts]);
   const shiftMoneyWeek=delta=>{const d=new Date(moneyWeekBase+"T00:00:00");d.setDate(d.getDate()+delta*7);setMoneyWeekBase(`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`);};
 
@@ -289,6 +313,18 @@ function App(){
     solicitudesCol.doc(req.id).delete().catch(e=>console.error(e));
   };
   const rejectRequest=id=>{solicitudesCol.doc(id).delete().catch(e=>console.error(e));};
+  const addBlock=({date,time,label})=>{
+    const id=uid();
+    const block={id,date,time,label};
+    setBlocks(prev=>[...prev,block]);
+    bloqueosCol.doc(id).set(block).catch(e=>console.error(e));
+    horariosCol.doc("block_"+id).set({date,time}).catch(e=>console.error(e));
+  };
+  const removeBlock=id=>{
+    setBlocks(prev=>prev.filter(b=>b.id!==id));
+    bloqueosCol.doc(id).delete().catch(e=>console.error(e));
+    horariosCol.doc("block_"+id).delete().catch(e=>console.error(e));
+  };
 
   // ---- Consejos automáticos ----
   const insights=useMemo(()=>{
@@ -339,7 +375,20 @@ function App(){
     const spendByClient={};
     confirmed.forEach(a=>{spendByClient[a.client]=(spendByClient[a.client]||0)+(parseFloat(a.price)||0);});
     const topSpenders=Object.entries(spendByClient).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]).slice(0,5);
-    return {inactive,thisWeekTotal,lastWeekTotal,weekChangePct,repeatedCancellers,topService,dayTotals,bestDayIdx,hasDayData,cancelRatePct,monthCancelled,monthAllApptsCount:monthAllAppts.length,depositPct,avgDeposit,withDepositCount:withDeposit.length,withoutDepositCount:withoutDeposit.length,newCount,returningCount,topSpenders};
+    // Comparativo mes contra mes (últimos 6 meses, incluido el actual)
+    const monthlyTotals=[];
+    for(let i=5;i>=0;i--){
+      const d=new Date(today+"T00:00:00");
+      d.setDate(1);
+      d.setMonth(d.getMonth()-i);
+      const ym=`${d.getFullYear()}-${pad(d.getMonth()+1)}`;
+      const total=confirmed.filter(a=>a.date.slice(0,7)===ym).reduce((s,a)=>s+(parseFloat(a.price)||0),0);
+      monthlyTotals.push({ym,label:`${MONTHS[d.getMonth()]} ${d.getFullYear()}`,total});
+    }
+    const thisMonthTotal=monthlyTotals[monthlyTotals.length-1].total;
+    const lastMonthTotal=monthlyTotals[monthlyTotals.length-2]?.total||0;
+    const monthChangePct=lastMonthTotal>0?Math.round(((thisMonthTotal-lastMonthTotal)/lastMonthTotal)*100):null;
+    return {inactive,thisWeekTotal,lastWeekTotal,weekChangePct,repeatedCancellers,topService,dayTotals,bestDayIdx,hasDayData,cancelRatePct,monthCancelled,monthAllApptsCount:monthAllAppts.length,depositPct,avgDeposit,withDepositCount:withDeposit.length,withoutDepositCount:withoutDeposit.length,newCount,returningCount,topSpenders,monthlyTotals,thisMonthTotal,lastMonthTotal,monthChangePct};
   },[appts,today]);
   const insightsCount=insights.inactive.length+insights.repeatedCancellers.length;
 
@@ -367,6 +416,7 @@ function App(){
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",paddingBottom:14}}>
             <div><div style={{fontSize:10,letterSpacing:4,color:C.accent,textTransform:"uppercase",marginBottom:4}}>Agenda</div><div style={{fontSize:26,fontWeight:400,letterSpacing:1}}>Yalith Salón</div></div>
             <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6}}>
+              <button onClick={toggleTheme} className="tap" style={{background:"none",border:`1px solid ${C.border}`,borderRadius:20,padding:"3px 10px",fontSize:11,color:C.muted,cursor:"pointer"}}>{theme==="dark"?"☀️ claro":"🌙 oscuro"}</button>
               {savedMsg&&<div style={{fontSize:10,color:savedMsg.startsWith("✓")?C.success:C.danger}}>{savedMsg}</div>}
               <div style={{fontSize:9,color:cloudStatus==="conectado"?C.success:C.muted}}>{cloudStatus==="conectado"?"☁️ sincronizado":cloudStatus}</div>
               <button onClick={()=>openNew()} style={S.btn} className="tap">+ Nueva cita</button>
@@ -386,14 +436,18 @@ function App(){
         </div>
       </div>
       {view==="week"&&(<div style={{padding:"16px"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><button onClick={()=>shiftWeek(-1)} style={S.navBtn} className="tap">‹</button><span style={{fontSize:13,color:C.muted}}>{fmt(week[0])} — {fmt(week[6])}</span><button onClick={()=>shiftWeek(1)} style={S.navBtn} className="tap">›</button></div><div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4}}>{week.map((d,i)=>{const confirmed=(byDate[d]||[]).filter(a=>a.status==="confirmada").length;const isToday=d===today,isSel=d===selDate;return(<button key={d} onClick={()=>{setSelDate(d);setView("day");}} className="tap" style={{background:isSel?C.accentFade:isToday?"rgba(255,255,255,0.04)":"none",border:`1px solid ${isToday?C.accent:C.border}`,borderRadius:10,padding:"10px 4px",cursor:"pointer",textAlign:"center"}}><div style={{fontSize:9,color:C.muted,letterSpacing:1,marginBottom:3}}>{DAY_NAMES[i]}</div><div style={{fontSize:18,color:isToday?C.accent:C.text,fontWeight:isToday?600:400}}>{d.split("-")[2]}</div>{confirmed>0&&<div style={{marginTop:5,display:"flex",flexWrap:"wrap",gap:2,justifyContent:"center"}}>{Array.from({length:Math.min(confirmed,3)}).map((_,j)=><div key={j} style={{width:5,height:5,borderRadius:"50%",background:C.accent}}/>)}</div>}</button>);})}</div><div style={{marginTop:20}}><div style={{fontSize:10,letterSpacing:3,color:C.muted,textTransform:"uppercase",marginBottom:12}}>Hoy · {fmt(today)}</div>{(byDate[today]||[]).filter(a=>a.status==="confirmada").length===0?<div style={{color:C.muted,fontSize:14,textAlign:"center",padding:"20px 0"}}>Sin citas hoy</div>:(byDate[today]||[]).filter(a=>a.status==="confirmada").map(a=><ApptCard key={a.id} a={a} onClick={()=>{setActiveA(a);setModal("detail");}}/>)}</div></div>)}
-      {view==="day"&&(<div style={{padding:"16px"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}}><button onClick={()=>shiftDay(-1)} style={S.navBtn} className="tap">‹</button><div style={{textAlign:"center"}}><div style={{fontSize:20}}>{fmt(selDate)}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>{dayAppts.filter(a=>a.status==="confirmada").length} citas confirmadas</div></div><button onClick={()=>shiftDay(1)} style={S.navBtn} className="tap">›</button></div><div style={{display:"flex",gap:8,marginBottom:16}}><button onClick={()=>openNew(selDate)} className="tap" style={{...S.btn,flex:1,justifyContent:"center"}}>+ Agregar cita</button><a href={buildDaySummaryShareUrl(selDate,dayAppts)} target="_blank" rel="noreferrer" style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:6,background:"rgba(37,211,102,0.12)",border:"1px solid #25D366",color:"#25D366",borderRadius:10,padding:"10px 0",fontSize:13,textDecoration:"none"}}>📤 Compartir resumen</a></div>{dayAppts.length===0?<div style={{color:C.muted,fontSize:14,textAlign:"center",padding:"40px 0"}}>Sin citas este día</div>:dayAppts.map(a=><ApptCard key={a.id} a={a} onClick={()=>{setActiveA(a);setModal("detail");}}/>)}</div>)}
+      {view==="day"&&(<div style={{padding:"16px"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}}><button onClick={()=>shiftDay(-1)} style={S.navBtn} className="tap">‹</button><div style={{textAlign:"center"}}><div style={{fontSize:20}}>{fmt(selDate)}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>{dayAppts.filter(a=>a.status==="confirmada").length} citas confirmadas</div></div><button onClick={()=>shiftDay(1)} style={S.navBtn} className="tap">›</button></div><div style={{display:"flex",gap:8,marginBottom:10}}><button onClick={()=>openNew(selDate)} className="tap" style={{...S.btn,flex:1,justifyContent:"center"}}>+ Agregar cita</button><a href={buildDaySummaryShareUrl(selDate,dayAppts)} target="_blank" rel="noreferrer" style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:6,background:"rgba(37,211,102,0.12)",border:"1px solid #25D366",color:"#25D366",borderRadius:10,padding:"10px 0",fontSize:13,textDecoration:"none"}}>📤 Compartir resumen</a></div><button onClick={()=>{setBlockForm({time:"10:00",label:"Comida"});setModal("block");}} className="tap" style={{width:"100%",background:"none",border:`1px solid ${C.border}`,color:C.muted,borderRadius:10,padding:"10px 0",fontSize:13,cursor:"pointer",marginBottom:16}}>🔒 Bloquear horario</button>{dayBlocks.map(b=>(<div key={b.id} style={{background:"rgba(122,114,105,0.08)",border:`1px solid ${C.border}`,borderRadius:10,padding:"10px 14px",marginBottom:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}><div style={{fontSize:13,color:C.muted}}>🔒 {b.time} — {b.label}</div><button onClick={()=>removeBlock(b.id)} className="tap" style={{background:"none",border:"none",color:C.danger,fontSize:12,cursor:"pointer"}}>Quitar</button></div>))}{dayAppts.length===0?<div style={{color:C.muted,fontSize:14,textAlign:"center",padding:"40px 0"}}>Sin citas este día</div>:dayAppts.map(a=><ApptCard key={a.id} a={a} onClick={()=>{setActiveA(a);setModal("detail");}}/>)}</div>)}
 
       {view==="money"&&(<div style={{padding:"16px"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><button onClick={()=>shiftMoneyWeek(-1)} style={S.navBtn} className="tap">‹</button><span style={{fontSize:13,color:C.muted}}>{fmt(moneyWeek[0])} — {fmt(moneyWeek[6])}</span><button onClick={()=>shiftMoneyWeek(1)} style={S.navBtn} className="tap">›</button></div>
-        <div style={{background:C.card,border:`1px solid ${C.accent}`,borderRadius:14,padding:"24px 18px",textAlign:"center",marginBottom:20}}>
+        <div style={{background:C.card,border:`1px solid ${C.accent}`,borderRadius:14,padding:"24px 18px",textAlign:"center",marginBottom:12}}>
           <Label>Total de la semana</Label>
           <div style={{fontSize:36,color:C.accent,fontWeight:600,marginTop:6}}>{money(moneyWeekTotal)}</div>
           <div style={{fontSize:12,color:C.muted,marginTop:6}}>{moneyWeekAppts.length} cita{moneyWeekAppts.length!==1?"s":""} confirmada{moneyWeekAppts.length!==1?"s":""}</div>
+        </div>
+        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"14px 18px",textAlign:"center",marginBottom:20}}>
+          <Label>Anticipos apartados esta semana</Label>
+          <div style={{fontSize:22,color:C.success,fontWeight:600,marginTop:4}}>{money(moneyWeekDeposits)}</div>
         </div>
         <div style={{fontSize:10,letterSpacing:3,color:C.muted,textTransform:"uppercase",marginBottom:12}}>Por día</div>
         {moneyWeek.map((d,i)=>(
@@ -457,6 +511,27 @@ function App(){
             {insights.weekChangePct!==null&&<div style={{fontSize:13,color:insights.weekChangePct>=0?C.success:C.danger}}>{insights.weekChangePct>=0?"▲":"▼"} {Math.abs(insights.weekChangePct)}%</div>}
           </div>
           <div style={{fontSize:11,color:C.muted,marginTop:4}}>Semana pasada: {money(insights.lastWeekTotal)}</div>
+        </div>
+
+        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:"18px",marginBottom:16}}>
+          <Label>Ingresos: este mes vs el pasado</Label>
+          <div style={{display:"flex",alignItems:"baseline",gap:10,marginTop:6}}>
+            <div style={{fontSize:26,color:C.accent,fontWeight:600}}>{money(insights.thisMonthTotal)}</div>
+            {insights.monthChangePct!==null&&<div style={{fontSize:13,color:insights.monthChangePct>=0?C.success:C.danger}}>{insights.monthChangePct>=0?"▲":"▼"} {Math.abs(insights.monthChangePct)}%</div>}
+          </div>
+          <div style={{fontSize:11,color:C.muted,marginTop:4,marginBottom:12}}>Mes pasado: {money(insights.lastMonthTotal)}</div>
+          <div style={{display:"flex",alignItems:"flex-end",gap:6,height:70}}>
+            {insights.monthlyTotals.map(m=>{
+              const maxTotal=Math.max(...insights.monthlyTotals.map(x=>x.total),1);
+              const h=Math.max(4,Math.round((m.total/maxTotal)*70));
+              return(<div key={m.ym} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"flex-end",height:70}}>
+                <div style={{width:"100%",height:h,background:C.accent,borderRadius:"4px 4px 0 0",opacity:0.85}}/>
+              </div>);
+            })}
+          </div>
+          <div style={{display:"flex",gap:6,marginTop:4}}>
+            {insights.monthlyTotals.map(m=>(<div key={m.ym} style={{flex:1,textAlign:"center",fontSize:9,color:C.muted}}>{m.label.split(" ")[0]}</div>))}
+          </div>
         </div>
 
         {insights.topService&&(<div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"14px 16px",marginBottom:12}}>
@@ -548,6 +623,7 @@ function App(){
       {view==="history"&&(<div style={{padding:"16px"}}><input value={searchQ} onChange={e=>setSearchQ(e.target.value)} placeholder="Buscar clienta por nombre o teléfono…" style={{...S.input,background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"13px 14px",marginBottom:16}}/>{!searchQ.trim()&&(<div><div style={{fontSize:10,letterSpacing:3,color:C.muted,textTransform:"uppercase",marginBottom:12}}>Todas las clientas</div>{Object.entries(appts.reduce((acc,a)=>{if(!acc[a.client])acc[a.client]={client:a.client,phone:a.phone,appts:[]};acc[a.client].appts.push(a);return acc;},{})).map(([name,data])=>(<div key={name} onClick={()=>setSearchQ(name)} className="tap" style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"12px 14px",marginBottom:8,cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontSize:15}}>{data.client}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>{data.phone}</div></div><div style={{fontSize:12,color:C.muted}}>{data.appts.length} cita{data.appts.length!==1?"s":""}</div></div>))}</div>)}{searchQ.trim()&&clientHistory.length===0&&<div style={{color:C.muted,fontSize:14,textAlign:"center",padding:"40px 0"}}>No se encontró ninguna clienta</div>}{clientHistory.map(c=>(<div key={c.client} style={{marginBottom:24}}><div style={{fontSize:16,marginBottom:4,display:"flex",alignItems:"center",gap:8}}>{c.client}{vipMap[c.client]&&<span style={{fontSize:11,color:C.vip}}>⭐ VIP</span>}</div><div style={{fontSize:12,color:C.muted,marginBottom:12}}>{c.phone} · {c.appts.length} cita{c.appts.length!==1?"s":""}</div>{c.appts.map(a=><HistoryRow key={a.id} a={a} onClick={()=>{setActiveA(a);setModal("detail");}}/>)}</div>))}</div>)}
       {modal&&(<div onClick={()=>setModal(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",zIndex:200,display:"flex",alignItems:"flex-end"}}><div onClick={e=>e.stopPropagation()} style={{background:C.card,borderRadius:"20px 20px 0 0",padding:"24px 20px 40px",width:"100%",maxWidth:480,margin:"0 auto",borderTop:`1px solid ${C.border}`,maxHeight:"88vh",overflowY:"auto"}}>
         {modal==="detail"&&activeA&&(<><ModalHeader title="Detalle de cita" onClose={()=>setModal(null)}/><div style={{marginBottom:10}}><Label>Clienta</Label><Val>{activeA.client}</Val></div><div style={{marginBottom:10}}><Label>Teléfono</Label><Val>{activeA.phone||"—"}</Val></div><div style={{marginBottom:10}}><Label>Servicio</Label><Val>{activeA.service}</Val></div><div style={{marginBottom:10}}><Label>Tipo de clienta</Label><Val>{activeA.isNew?"Nueva":"Ya era clienta"}</Val></div><div style={{display:"flex",gap:16,marginBottom:10}}><div><Label>Fecha</Label><Val>{fmt(activeA.date)}</Val></div><div><Label>Hora</Label><Val>{activeA.time}</Val></div></div>{activeA.price&&<div style={{marginBottom:10}}><Label>Precio</Label><Val>{money(activeA.price)}</Val></div>}{activeA.deposit&&<div style={{marginBottom:10}}><Label>Anticipo</Label><Val>{money(activeA.deposit)}</Val></div>}{activeA.notes&&<div style={{marginBottom:10}}><Label>Notas</Label><Val>{activeA.notes}</Val></div>}<div style={{marginBottom:20}}><Label>Estado</Label><span style={{display:"inline-block",padding:"3px 12px",borderRadius:20,fontSize:12,background:`${C[STATUS_COLORS[activeA.status]||"success"]}22`,color:C[STATUS_COLORS[activeA.status]||"success"]}}>{STATUS_LABELS[activeA.status]||activeA.status}</span></div><div style={{display:"flex",gap:10,marginBottom:10}}><button onClick={()=>openEdit(activeA)} className="tap" style={{...S.btn,flex:1,justifyContent:"center"}}>Editar / Mover</button></div>{activeA.status==="confirmada"?(<div style={{display:"flex",gap:10,marginBottom:10}}><button onClick={()=>cancelAppt(activeA.id)} className="tap" style={{...S.btn,flex:1,justifyContent:"center",background:"rgba(201,110,110,0.15)",borderColor:C.danger,color:C.danger}}>Canceló</button><button onClick={()=>noShowAppt(activeA.id)} className="tap" style={{...S.btn,flex:1,justifyContent:"center",background:"rgba(224,164,88,0.15)",borderColor:C.warning,color:C.warning}}>No llegó</button></div>):(<div style={{marginBottom:10}}><button onClick={()=>restore(activeA.id)} className="tap" style={{...S.btn,width:"100%",justifyContent:"center"}}>Restaurar como confirmada</button></div>)}{activeA.phone&&activeA.status==="confirmada"&&(<a href={buildWAMsg(activeA)} target="_blank" rel="noreferrer" style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,background:"rgba(37,211,102,0.12)",border:"1px solid #25D366",color:"#25D366",borderRadius:10,padding:"12px 0",fontSize:14,textDecoration:"none",width:"100%",boxSizing:"border-box"}}>📲 Enviar recordatorio por WhatsApp</a>)}<button onClick={()=>deleteAppt(activeA.id)} className="tap" style={{width:"100%",background:"none",border:"none",color:C.muted,fontSize:12,padding:"14px 0 0",cursor:"pointer",textDecoration:"underline"}}>🗑 Eliminar cita permanentemente</button></>)}
+        {modal==="block"&&(<><ModalHeader title="Bloquear horario" onClose={()=>setModal(null)}/><Field label="Fecha">{fmt(selDate)}</Field><Field label="Hora"><input style={S.input} type="time" value={blockForm.time} onChange={e=>setBlockForm(f=>({...f,time:e.target.value}))}/></Field><Field label="Motivo"><div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:10}}>{["Comida","Día libre","Cita médica","Personal"].map(l=>(<button key={l} type="button" onClick={()=>setBlockForm(f=>({...f,label:l}))} className="tap" style={{padding:"8px 12px",borderRadius:8,border:`1px solid ${blockForm.label===l?C.accent:C.border}`,background:blockForm.label===l?C.accentFade:"transparent",color:blockForm.label===l?C.accent:C.muted,fontSize:12,cursor:"pointer"}}>{l}</button>))}</div><input style={S.input} value={blockForm.label} onChange={e=>setBlockForm(f=>({...f,label:e.target.value}))} placeholder="Escribe un motivo personalizado"/></Field><button onClick={()=>{addBlock({date:selDate,time:blockForm.time,label:blockForm.label});setModal(null);}} className="tap" style={{...S.btn,width:"100%",justifyContent:"center",padding:"14px",fontSize:15,marginTop:4}}>Bloquear este horario</button></>)}
         {(modal==="new"||modal==="edit")&&(<><ModalHeader title={modal==="new"?"Nueva cita":"Editar cita"} onClose={()=>setModal(null)}/><Field label="Nombre de clienta"><input style={S.input} value={form.client} onChange={e=>setF("client",e.target.value)} placeholder="Ej. Sofía Ramírez"/></Field><Field label="Tipo de clienta"><div style={{display:"flex",gap:8}}><button type="button" onClick={()=>setF("isNew",true)} className="tap" style={{flex:1,padding:"11px 0",borderRadius:8,border:`1px solid ${form.isNew?C.accent:C.border}`,background:form.isNew?C.accentFade:"transparent",color:form.isNew?C.accent:C.muted,fontSize:13,cursor:"pointer"}}>Nueva</button><button type="button" onClick={()=>setF("isNew",false)} className="tap" style={{flex:1,padding:"11px 0",borderRadius:8,border:`1px solid ${!form.isNew?C.accent:C.border}`,background:!form.isNew?C.accentFade:"transparent",color:!form.isNew?C.accent:C.muted,fontSize:13,cursor:"pointer"}}>Ya es clienta</button></div></Field><Field label="Teléfono (opcional)"><input style={S.input} value={form.phone} onChange={e=>setF("phone",e.target.value)} placeholder="9981234567" inputMode="numeric"/></Field><Field label="Servicio"><select style={S.input} value={form.service} onChange={e=>setForm(f=>({...f,service:e.target.value,price:priceForService(e.target.value)}))}>{SERVICES.map(s=><option key={s}>{s}</option>)}</select></Field><div style={{display:"flex",gap:12}}><Field label="Fecha" style={{flex:1}}><input style={S.input} type="date" value={form.date} onChange={e=>setF("date",e.target.value)}/></Field><Field label="Hora" style={{flex:1}}><input style={S.input} type="time" value={form.time} onChange={e=>setF("time",e.target.value)}/></Field></div><div style={{display:"flex",gap:12}}><Field label="Precio (opcional)" style={{flex:1}}><input style={S.input} value={form.price} onChange={e=>setF("price",e.target.value.replace(/[^0-9.]/g,""))} placeholder="Ej. 850" inputMode="decimal"/></Field><Field label="Anticipo (opcional)" style={{flex:1}}><input style={S.input} value={form.deposit} onChange={e=>setF("deposit",e.target.value.replace(/[^0-9.]/g,""))} placeholder="Ej. 100" inputMode="decimal"/></Field></div><Field label="Notas (opcional)"><textarea style={{...S.input,height:70,resize:"none"}} value={form.notes} onChange={e=>setF("notes",e.target.value)} placeholder="Alergias, preferencias…"/></Field><button onClick={modal==="new"?saveNew:saveEdit} className="tap" style={{...S.btn,width:"100%",justifyContent:"center",padding:"14px",fontSize:15,marginTop:4}}>{modal==="new"?"Guardar cita":"Actualizar cita"}</button></>)}
       </div></div>)}
     </div>
